@@ -1,0 +1,20 @@
+{
+  "name": "cold-email-platform",
+  "version": "0.1.0",
+  "private": true,
+  "packageManager": "pnpm@8.15.0",
+  "scripts": {
+    "dev": "turbo run dev",
+    "build": "turbo run build",
+    "start": "turbo run start",
+    "lint": "turbo run lint",
+    "clean": "turbo run clean && rm -rf node_modules",
+    "db:push": "pnpm --filter @aninda/database db:push",
+    "db:generate": "pnpm --filter @aninda/database generate",
+    "db:studio": "pnpm --filter @aninda/database studio"
+  },
+  "devDependencies": {
+    "turbo": "^2.0.0",
+    "typescript": "^5.3.3"
+  }
+}
