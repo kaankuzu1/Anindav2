@@ -31,5 +31,8 @@ pnpm-debug.log*
 # Testing
 coverage
 
+# Secrets
+RAILWAY_ENV.md
+
 # Misc
 *.tsbuildinfo
