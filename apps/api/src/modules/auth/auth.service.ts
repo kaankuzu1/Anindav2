@@ -59,7 +59,7 @@ export class AuthService {
   async getTeamMembers(teamId: string) {
     const { data, error } = await this.supabase
       .from('team_members')
-      .select('*, users(email, full_name)')
+      .select('*, users!user_id(email, full_name)')
       .eq('team_id', teamId)
       .order('created_at', { ascending: true });
 
@@ -145,7 +145,7 @@ export class AuthService {
         invited_at: new Date().toISOString(),
         accepted_at: new Date().toISOString(),
       })
-      .select('*, users(email, full_name)')
+      .select('*, users!user_id(email, full_name)')
       .single();
 
     if (error) {
