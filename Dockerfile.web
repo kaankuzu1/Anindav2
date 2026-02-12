@@ -4,11 +4,9 @@ RUN corepack enable && corepack prepare pnpm@8.15.0 --activate
 
 WORKDIR /app
 
-COPY package.json pnpm-lock.yaml pnpm-workspace.yaml tsconfig.json ./
-COPY packages/ ./packages/
-COPY apps/web/ ./apps/web/
+COPY . .
 
-RUN pnpm install --no-frozen-lockfile
+RUN pnpm install --frozen-lockfile
 
 RUN pnpm --filter @aninda/shared build && \
     pnpm --filter @aninda/database build && \
