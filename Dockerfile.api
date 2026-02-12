@@ -1,0 +1,20 @@
+FROM node:20-slim
+
+RUN corepack enable && corepack prepare pnpm@8.15.0 --activate
+
+WORKDIR /app
+
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml tsconfig.json ./
+COPY packages/ ./packages/
+COPY apps/api/ ./apps/api/
+
+RUN pnpm install --no-frozen-lockfile
+
+RUN pnpm --filter @aninda/shared build && \
+    pnpm --filter @aninda/database build && \
+    pnpm --filter @aninda/email-client build && \
+    pnpm --filter @aninda/api build
+
+EXPOSE 3001
+
+CMD ["node", "apps/api/dist/main.js"]

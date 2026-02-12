@@ -1,0 +1,12 @@
+node_modules
+.git
+*.md
+tests/
+.claude/
+.env
+.env.*
+apps/api/.env
+apps/api/.env.example
+apps/workers/.env
+apps/workers/.env.example
+apps/web/.env.local
