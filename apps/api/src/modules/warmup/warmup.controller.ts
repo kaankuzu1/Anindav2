@@ -8,11 +8,11 @@ import {
   Query,
   UseGuards,
 } from '@nestjs/common';
-import { AuthGuard } from '@nestjs/passport';
+import { SupabaseAuthGuard } from '../../shared/guards/supabase-auth.guard';
 import { WarmupService } from './warmup.service';
 
 @Controller('warmup')
-@UseGuards(AuthGuard('jwt'))
+@UseGuards(SupabaseAuthGuard)
 export class WarmupController {
   constructor(private readonly warmupService: WarmupService) {}
 
@@ -47,12 +47,21 @@ export class WarmupController {
     );
   }
 
+  @Get(':inbox_id/assignments')
+  async getAssignments(
+    @Param('inbox_id') inboxId: string,
+    @Query('team_id') teamId: string,
+  ) {
+    return this.warmupService.getAssignments(inboxId, teamId);
+  }
+
   @Post(':inbox_id/enable')
   async enableWarmup(
     @Param('inbox_id') inboxId: string,
     @Query('team_id') teamId: string,
+    @Body() body: { mode?: 'pool' | 'network' },
   ) {
-    return this.warmupService.enableWarmup(inboxId, teamId);
+    return this.warmupService.enableWarmup(inboxId, teamId, body?.mode);
   }
 
   @Post(':inbox_id/disable')
@@ -61,6 +70,15 @@ export class WarmupController {
     @Query('team_id') teamId: string,
   ) {
     return this.warmupService.disableWarmup(inboxId, teamId);
+  }
+
+  @Patch(':inbox_id/mode')
+  async switchMode(
+    @Param('inbox_id') inboxId: string,
+    @Query('team_id') teamId: string,
+    @Body() body: { mode: 'pool' | 'network' | null },
+  ) {
+    return this.warmupService.switchWarmupMode(inboxId, teamId, body.mode);
   }
 
   @Patch(':inbox_id')

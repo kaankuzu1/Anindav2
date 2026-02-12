@@ -48,11 +48,22 @@ interface AIDailySummaryResponse {
   };
 }
 
+interface AIBatchIntentResponse {
+  id: string;
+  intent: string;
+  confidence: number;
+}
+
 interface AIObjectionResponse {
   detectedObjection: string;
   suggestedResponse: string;
   alternativeResponses: string[];
   tips: string[];
+}
+
+interface AIPersonalizeEmailResponse {
+  subject: string;
+  body: string;
 }
 
 async function aiRequest<T>(endpoint: string, body: Record<string, unknown>, token: string): Promise<T> {
@@ -171,6 +182,36 @@ export const aiClient = {
     return aiGet('daily-summary', { team_id: teamId }, token);
   },
 
+  // Batch Detect Intent
+  batchDetectIntent: (
+    replies: Array<{ id: string; emailContent: string; subject: string }>,
+    token: string,
+  ): Promise<AIBatchIntentResponse[]> => {
+    return aiRequest('batch-detect-intent', { replies }, token);
+  },
+
+  // Personalize Email (Smart Template)
+  personalizeEmail: (
+    subject: string,
+    body: string,
+    lead: { firstName?: string; lastName?: string; company?: string; title?: string; analysisNotes?: string },
+    tone: string | undefined,
+    country: string | undefined,
+    token: string,
+    toneEnabled?: boolean,
+    languageMatch?: boolean,
+  ): Promise<AIPersonalizeEmailResponse> => {
+    return aiRequest('personalize-email', {
+      subject,
+      body,
+      lead,
+      tone,
+      country,
+      toneEnabled,
+      languageMatch,
+    }, token);
+  },
+
   // Handle Objection
   handleObjection: (
     objectionEmail: string,
@@ -187,9 +228,11 @@ export const aiClient = {
 export type {
   AIReplyResponse,
   AIIntentResponse,
+  AIBatchIntentResponse,
   AICampaignResponse,
   AISpamCheckResponse,
   AIFollowUpResponse,
   AIDailySummaryResponse,
   AIObjectionResponse,
+  AIPersonalizeEmailResponse,
 };

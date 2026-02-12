@@ -10,6 +10,8 @@ import { AnalyticsModule } from './modules/analytics/analytics.module';
 import { WebhooksModule } from './modules/webhooks/webhooks.module';
 import { QueueModule } from './modules/queue/queue.module';
 import { AIModule } from './modules/ai/ai.module';
+import { TrackingModule } from './modules/tracking/tracking.module';
+import { AdminModule } from './modules/admin/admin.module';
 import { DatabaseModule } from './shared/database/database.module';
 import { RedisModule } from './shared/redis/redis.module';
 
@@ -31,6 +33,8 @@ import { RedisModule } from './shared/redis/redis.module';
     WebhooksModule,
     QueueModule,
     AIModule,
+    TrackingModule,
+    AdminModule,
   ],
 })
 export class AppModule {}

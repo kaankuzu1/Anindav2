@@ -6,31 +6,201 @@ import crypto from 'crypto';
 
 /**
  * Process spintax in text: {Hello|Hi|Hey} -> random selection
+ * Supports nested spintax: {Hi {there|friend}|Hello}
  */
 export function processSpintax(text: string): string {
-  const spintaxRegex = /\{([^{}]+)\}/g;
-  return text.replace(spintaxRegex, (_, options: string) => {
-    const choices = options.split('|');
-    return choices[Math.floor(Math.random() * choices.length)];
+  // Process from innermost to outermost
+  let result = text;
+  let maxIterations = 10; // Prevent infinite loops
+
+  while (maxIterations > 0) {
+    // Match non-nested spintax first (no { or } inside)
+    const spintaxRegex = /\{([^{}|]+(?:\|[^{}|]+)+)\}/g;
+    const newResult = result.replace(spintaxRegex, (_, options: string) => {
+      const choices = options.split('|');
+      return choices[Math.floor(Math.random() * choices.length)];
+    });
+
+    if (newResult === result) break;
+    result = newResult;
+    maxIterations--;
+  }
+
+  return result;
+}
+
+/**
+ * Normalize a variable map to support both camelCase and snake_case lookups.
+ * Bidirectional: if only one format exists, the other is added.
+ */
+export function normalizeVariableMap(variables: Record<string, string | undefined>): Record<string, string | undefined> {
+  const normalized: Record<string, string | undefined> = { ...variables };
+
+  const mappings: [string, string][] = [
+    // Lead variables
+    ['firstName', 'first_name'],
+    ['lastName', 'last_name'],
+    ['fullName', 'full_name'],
+    // Sender variables
+    ['senderFirstName', 'sender_first_name'],
+    ['senderLastName', 'sender_last_name'],
+    ['senderCompany', 'sender_company'],
+    ['senderTitle', 'sender_title'],
+    ['senderPhone', 'sender_phone'],
+    ['senderWebsite', 'sender_website'],
+    // From variables
+    ['fromEmail', 'from_email'],
+    ['fromName', 'from_name'],
+  ];
+
+  for (const [camel, snake] of mappings) {
+    if (variables[camel] && !variables[snake]) normalized[snake] = variables[camel];
+    if (variables[snake] && !variables[camel]) normalized[camel] = variables[snake];
+  }
+
+  return normalized;
+}
+
+/**
+ * Process conditional blocks: {if:variableName}content{/if} or {if:variableName}content{else}fallback{/if}
+ * Only shows content if the variable exists and is not empty
+ */
+export function processConditionalBlocks(text: string, variables: Record<string, string | undefined>): string {
+  const normalizedVars = normalizeVariableMap(variables);
+  let result = text;
+
+  // Process {if:variable}content{else}fallback{/if} blocks
+  const conditionalWithElseRegex = /\{if:(\w+)\}([\s\S]*?)\{else\}([\s\S]*?)\{\/if\}/g;
+  result = result.replace(conditionalWithElseRegex, (_, variable: string, ifContent: string, elseContent: string) => {
+    const value = normalizedVars[variable];
+    if (value && value.trim() !== '') {
+      return ifContent;
+    }
+    return elseContent;
+  });
+
+  // Process {if:variable}content{/if} blocks (without else)
+  const conditionalRegex = /\{if:(\w+)\}([\s\S]*?)\{\/if\}/g;
+  result = result.replace(conditionalRegex, (_, variable: string, content: string) => {
+    const value = normalizedVars[variable];
+    if (value && value.trim() !== '') {
+      return content;
+    }
+    return '';
+  });
+
+  // Process {ifnot:variable}content{/ifnot} blocks (inverse conditional)
+  const inverseConditionalRegex = /\{ifnot:(\w+)\}([\s\S]*?)\{\/ifnot\}/g;
+  result = result.replace(inverseConditionalRegex, (_, variable: string, content: string) => {
+    const value = normalizedVars[variable];
+    if (!value || value.trim() === '') {
+      return content;
+    }
+    return '';
+  });
+
+  return result;
+}
+
+/**
+ * Process fallback values: {{variableName|fallback value}}
+ */
+export function processVariablesWithFallback(text: string, variables: Record<string, string | undefined>): string {
+  // Match {{variable|fallback}} pattern
+  return text.replace(/\{\{(\w+)\|([\s\S]+?)\}\}/g, (_, key: string, fallback: string) => {
+    const value = variables[key];
+    if (value && value.trim() !== '') {
+      return value;
+    }
+    return fallback;
   });
 }
 
 /**
  * Inject variables into text: {{firstName}} -> John
+ * Supports both camelCase and snake_case variable names
  */
 export function injectVariables(text: string, variables: Record<string, string | undefined>): string {
+  const normalizedVars = normalizeVariableMap(variables);
+
   return text.replace(/\{\{(\w+)\}\}/g, (match, key: string) => {
-    return variables[key] ?? match;
+    return normalizedVars[key] ?? match;
   });
 }
 
 /**
- * Process both spintax and variables
+ * Process both spintax and variables with full template engine support
+ * Order: 1. Conditionals, 2. Fallbacks, 3. Spintax, 4. Variables
  */
 export function processEmailContent(template: string, variables: Record<string, string | undefined>): string {
-  let content = processSpintax(template);
+  let content = template;
+
+  // 1. Process conditional blocks first (needs original variables)
+  content = processConditionalBlocks(content, variables);
+
+  // 2. Process variables with fallback values
+  content = processVariablesWithFallback(content, variables);
+
+  // 3. Process spintax (random selection)
+  content = processSpintax(content);
+
+  // 4. Finally inject remaining variables
   content = injectVariables(content, variables);
+
   return content;
+}
+
+/**
+ * Validate spintax syntax in a template
+ * Returns array of errors if invalid
+ */
+export function validateTemplateSyntax(template: string): string[] {
+  const errors: string[] = [];
+
+  // Check for unmatched braces
+  let braceCount = 0;
+  let inVariable = false;
+
+  for (let i = 0; i < template.length; i++) {
+    const char = template[i];
+    const nextChar = template[i + 1];
+
+    if (char === '{' && nextChar === '{') {
+      inVariable = true;
+      i++; // Skip next char
+    } else if (char === '}' && nextChar === '}' && inVariable) {
+      inVariable = false;
+      i++;
+    } else if (char === '{' && !inVariable) {
+      braceCount++;
+    } else if (char === '}' && !inVariable) {
+      braceCount--;
+      if (braceCount < 0) {
+        errors.push(`Unmatched closing brace at position ${i}`);
+        braceCount = 0;
+      }
+    }
+  }
+
+  if (braceCount > 0) {
+    errors.push('Unmatched opening brace(s) found');
+  }
+
+  // Check for unclosed conditional blocks
+  const openIfs = (template.match(/\{if:\w+\}/g) || []).length;
+  const closeIfs = (template.match(/\{\/if\}/g) || []).length;
+  if (openIfs !== closeIfs) {
+    errors.push(`Mismatched conditional blocks: ${openIfs} {if:} vs ${closeIfs} {/if}`);
+  }
+
+  // Check for unclosed ifnot blocks
+  const openIfnots = (template.match(/\{ifnot:\w+\}/g) || []).length;
+  const closeIfnots = (template.match(/\{\/ifnot\}/g) || []).length;
+  if (openIfnots !== closeIfnots) {
+    errors.push(`Mismatched inverse conditional blocks: ${openIfnots} {ifnot:} vs ${closeIfnots} {/ifnot}`);
+  }
+
+  return errors;
 }
 
 /**
@@ -303,6 +473,41 @@ export function isWithinSendWindow(
   // Check time
   const currentTime = `${hour}:${minute}`;
   return currentTime >= startTime && currentTime <= endTime;
+}
+
+/**
+ * Check if current time falls within a per-day schedule.
+ * Each day can have multiple time intervals (e.g., morning + afternoon).
+ * Start hour is inclusive, end hour is exclusive.
+ */
+export function isWithinPerDaySchedule(
+  now: Date,
+  schedule: Record<string, { start: number; end: number }[]>,
+  timezone: string
+): boolean {
+  // Get current weekday and hour in the specified timezone
+  const dayFormatter = new Intl.DateTimeFormat('en-US', {
+    timeZone: timezone,
+    weekday: 'short',
+  });
+  const hourFormatter = new Intl.DateTimeFormat('en-US', {
+    timeZone: timezone,
+    hour: 'numeric',
+    hour12: false,
+  });
+
+  const weekday = dayFormatter.format(now).toLowerCase().slice(0, 3);
+  const hourStr = hourFormatter.format(now);
+  const hour = parseInt(hourStr, 10);
+
+  // Check if this weekday has any intervals
+  const intervals = schedule[weekday];
+  if (!intervals || intervals.length === 0) {
+    return false;
+  }
+
+  // Check if current hour falls within any interval (start inclusive, end exclusive)
+  return intervals.some(interval => hour >= interval.start && hour < interval.end);
 }
 
 export function getNextSendWindow(

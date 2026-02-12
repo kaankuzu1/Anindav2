@@ -193,7 +193,7 @@ export default function AIDailySummary() {
       {/* Link to replies */}
       {summary.metrics.needsAttention > 0 && (
         <a
-          href="/replies?filter=unread"
+          href="/unibox?filter=unread"
           className="mt-4 inline-flex items-center gap-1 text-sm text-primary hover:text-primary/80"
         >
           View unread replies

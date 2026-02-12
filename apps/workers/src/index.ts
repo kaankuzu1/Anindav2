@@ -6,6 +6,10 @@ import { EmailSenderWorker } from './email-sender';
 import { WarmupWorker } from './warmup';
 import { ReplyScannerWorker } from './reply-scanner';
 import { WarmupScheduler } from './warmup-scheduler';
+import { CampaignScheduler } from './campaign-scheduler';
+import { SmartScheduler } from './smart-scheduler';
+import { ConnectionChecker } from './connection-checker';
+import { ABTestOptimizer } from './ab-test-optimizer';
 
 const redisConnection = new Redis(process.env.REDIS_URL!, {
   maxRetriesPerRequest: null,
@@ -56,6 +60,29 @@ async function main() {
   const replyScanner = new ReplyScannerWorker(redisConnection, supabase);
   replyScanner.start();
 
+  // Campaign Scheduler (schedules campaign emails periodically)
+  const campaignScheduler = new CampaignScheduler(redisConnection, supabase);
+  campaignScheduler.start();
+
+  // Smart Scheduler (send time optimization)
+  // This provides optimized scheduling capabilities that can be used by other workers
+  const smartScheduler = new SmartScheduler(redisConnection, supabase, {
+    defaultWindowStart: parseInt(process.env.DEFAULT_SEND_WINDOW_START || '9', 10),
+    defaultWindowEnd: parseInt(process.env.DEFAULT_SEND_WINDOW_END || '11', 10),
+    preferredDays: [2, 3, 4], // Tuesday, Wednesday, Thursday
+    useHistoricalData: true,
+    senderTimezone: process.env.SENDER_TIMEZONE || 'America/New_York',
+  });
+  console.log('Smart Scheduler initialized (send time optimization enabled)');
+
+  // A/B Test Optimizer (periodic variant optimization)
+  const abTestOptimizer = new ABTestOptimizer(redisConnection, supabase);
+  abTestOptimizer.start();
+
+  // Connection Checker (daily inbox connection validation)
+  const connectionChecker = new ConnectionChecker(supabase);
+  connectionChecker.start();
+
   console.log('All workers started');
 
   // Handle graceful shutdown
@@ -65,6 +92,10 @@ async function main() {
     await warmupWorker.stop();
     await warmupScheduler.stop();
     await replyScanner.stop();
+    await campaignScheduler.stop();
+    await smartScheduler.close();
+    await abTestOptimizer.stop();
+    connectionChecker.stop();
     await redisConnection.quit();
     process.exit(0);
   };

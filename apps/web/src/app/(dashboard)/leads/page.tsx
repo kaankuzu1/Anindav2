@@ -1,10 +1,20 @@
 'use client';
 
-import { useEffect, useState } from 'react';
-import { useRouter, useSearchParams } from 'next/navigation';
+import { useEffect, useState, useRef, useCallback } from 'react';
+import { useSearchParams } from 'next/navigation';
 import Link from 'next/link';
 import { createClient } from '@/lib/supabase/client';
-import { Plus, Upload, Search, Users, Filter, MoreHorizontal, Trash2, FolderOpen } from 'lucide-react';
+import { useTeam } from '@/hooks/use-team';
+import { Plus, Upload, Search, Users, Filter, MoreHorizontal, Trash2, FolderOpen, CheckCircle, XCircle, AlertTriangle, HelpCircle, Save, X, ShieldCheck, RefreshCw } from 'lucide-react';
+import { getLeadStatusColor, getVerificationStatusColor, getVerificationIcon, formatLeadStatus } from '@/lib/lead-status';
+import { StatCard } from '@/components/ui/stat-card';
+
+type EditableField = 'first_name' | 'last_name' | 'email' | 'company' | 'title';
+
+interface EditingCell {
+  leadId: string;
+  field: EditableField;
+}
 
 interface Lead {
   id: string;
@@ -16,6 +26,8 @@ interface Lead {
   status: string;
   created_at: string;
   lead_lists?: { name: string };
+  email_verification_status: string | null;
+  email_risk_score: number | null;
 }
 
 interface LeadList {
@@ -25,13 +37,15 @@ interface LeadList {
   created_at: string;
 }
 
+const apiUrl = (process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001') + '/api/v1';
+
 export default function LeadsPage() {
-  const router = useRouter();
   const searchParams = useSearchParams();
   const supabase = createClient();
+  const { teamId, loading: teamLoading, accessToken } = useTeam();
 
   const [loading, setLoading] = useState(true);
-  const [teamId, setTeamId] = useState<string | null>(null);
+  const [verifyingLead, setVerifyingLead] = useState<string | null>(null);
   const [leads, setLeads] = useState<Lead[]>([]);
   const [leadLists, setLeadLists] = useState<LeadList[]>([]);
   const [totalCount, setTotalCount] = useState(0);
@@ -39,34 +53,32 @@ export default function LeadsPage() {
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedLeads, setSelectedLeads] = useState<string[]>([]);
 
+  // Inline editing state
+  const [editingCell, setEditingCell] = useState<EditingCell | null>(null);
+  const [editedLeads, setEditedLeads] = useState<Map<string, Partial<Lead>>>(new Map());
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const [saveSuccess, setSaveSuccess] = useState<string | null>(null);
+  const editInputRef = useRef<HTMLInputElement>(null);
+
   useEffect(() => {
+    if (teamLoading) return;
+    if (!teamId) {
+      setLoading(false);
+      return;
+    }
+
     async function fetchData() {
-      const { data: { user } } = await supabase.auth.getUser();
-      if (!user) {
-        router.push('/login');
-        return;
-      }
-
-      const { data: teamMembers } = await supabase
-        .from('team_members')
-        .select('team_id')
-        .eq('user_id', user.id)
-        .limit(1) as { data: { team_id: string }[] | null };
-
-      if (!teamMembers || teamMembers.length === 0) {
-        setLoading(false);
-        return;
-      }
-
-      const tid = teamMembers[0].team_id;
-      setTeamId(tid);
-
       // Fetch lead lists
-      const { data: lists } = await supabase
+      const { data: lists, error: listsError } = await supabase
         .from('lead_lists')
         .select('*')
-        .eq('team_id', tid)
+        .eq('team_id', teamId!)
         .order('created_at', { ascending: false });
+
+      if (listsError) {
+        console.error('Failed to fetch lead_lists:', listsError);
+      }
 
       setLeadLists(lists ?? []);
 
@@ -75,18 +87,18 @@ export default function LeadsPage() {
       setSelectedList(listFromUrl);
 
       // Fetch leads with filter if provided
-      await fetchLeads(tid, listFromUrl, '');
+      await fetchLeads(teamId!, listFromUrl, '');
 
       setLoading(false);
     }
 
     fetchData();
-  }, [supabase, router, searchParams]);
+  }, [teamId, teamLoading]);
 
   const fetchLeads = async (tid: string, listId: string, search: string) => {
     let query = supabase
       .from('leads')
-      .select('*, lead_lists(name)', { count: 'exact' })
+      .select('*, lead_lists(name), email_verification_status, email_risk_score', { count: 'exact' })
       .eq('team_id', tid)
       .order('created_at', { ascending: false })
       .limit(50);
@@ -101,7 +113,10 @@ export default function LeadsPage() {
       );
     }
 
-    const { data, count } = await query;
+    const { data, count, error: leadsError } = await query;
+    if (leadsError) {
+      console.error('Failed to fetch leads:', leadsError);
+    }
     setLeads(data ?? []);
     setTotalCount(count ?? 0);
   };
@@ -135,26 +150,206 @@ export default function LeadsPage() {
     }
   };
 
-  const getStatusColor = (status: string) => {
-    switch (status) {
-      case 'pending':
-        return 'bg-gray-100 text-gray-800 dark:bg-gray-500/20 dark:text-gray-300';
-      case 'contacted':
-        return 'bg-blue-100 text-blue-800 dark:bg-blue-500/20 dark:text-blue-300';
-      case 'replied':
-        return 'bg-green-100 text-green-800 dark:bg-green-500/20 dark:text-green-300';
-      case 'interested':
-        return 'bg-emerald-100 text-emerald-800 dark:bg-emerald-500/20 dark:text-emerald-300';
-      case 'not_interested':
-        return 'bg-red-100 text-red-800 dark:bg-red-500/20 dark:text-red-300';
-      case 'bounced':
-        return 'bg-orange-100 text-orange-800 dark:bg-orange-500/20 dark:text-orange-300';
-      default:
-        return 'bg-gray-100 text-gray-800 dark:bg-gray-500/20 dark:text-gray-300';
+  // Inline editing helpers
+  const getDisplayValue = useCallback((lead: Lead, field: EditableField): string => {
+    const edits = editedLeads.get(lead.id);
+    if (edits && field in edits) {
+      return (edits[field] as string) ?? '';
+    }
+    return (lead[field] as string) ?? '';
+  }, [editedLeads]);
+
+  const isFieldEdited = useCallback((leadId: string, field: EditableField): boolean => {
+    const edits = editedLeads.get(leadId);
+    return edits !== undefined && field in edits;
+  }, [editedLeads]);
+
+  const handleCellClick = useCallback((leadId: string, field: EditableField) => {
+    setEditingCell({ leadId, field });
+    setSaveError(null);
+    setSaveSuccess(null);
+  }, []);
+
+  const handleCellChange = useCallback((leadId: string, field: EditableField, value: string) => {
+    setEditedLeads(prev => {
+      const next = new Map(prev);
+      const existing = next.get(leadId) || {};
+      next.set(leadId, { ...existing, [field]: value });
+      return next;
+    });
+  }, []);
+
+  const handleCellBlur = useCallback(() => {
+    setEditingCell(null);
+  }, []);
+
+  const handleCellKeyDown = useCallback((e: React.KeyboardEvent<HTMLInputElement>, leadId: string, field: EditableField) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      setEditingCell(null);
+    } else if (e.key === 'Escape') {
+      e.preventDefault();
+      // Revert this specific field edit
+      setEditedLeads(prev => {
+        const next = new Map(prev);
+        const existing = next.get(leadId);
+        if (existing) {
+          const updated = { ...existing };
+          delete updated[field];
+          if (Object.keys(updated).length === 0) {
+            next.delete(leadId);
+          } else {
+            next.set(leadId, updated);
+          }
+        }
+        return next;
+      });
+      setEditingCell(null);
+    } else if (e.key === 'Tab') {
+      e.preventDefault();
+      setEditingCell(null);
+      // Move to next editable field in the same row
+      const fieldOrder: EditableField[] = ['first_name', 'last_name', 'email', 'company', 'title'];
+      const currentIndex = fieldOrder.indexOf(field);
+      const nextField = e.shiftKey
+        ? fieldOrder[currentIndex - 1]
+        : fieldOrder[currentIndex + 1];
+      if (nextField) {
+        // Use setTimeout to allow the blur to complete first
+        setTimeout(() => setEditingCell({ leadId, field: nextField }), 0);
+      }
+    }
+  }, []);
+
+  const handleSaveAll = async () => {
+    if (editedLeads.size === 0 || !teamId) return;
+
+    setSaving(true);
+    setSaveError(null);
+    setSaveSuccess(null);
+
+    try {
+      const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+      for (const [leadId, changes] of editedLeads.entries()) {
+        // Validate email if it was changed
+        if (changes.email !== undefined) {
+          if (!emailRegex.test(changes.email)) {
+            throw new Error(`Invalid email address for one or more leads`);
+          }
+        }
+
+        const updateData: Record<string, string | null> = {};
+        for (const [key, value] of Object.entries(changes)) {
+          if (key === 'email') {
+            updateData[key] = (value as string).toLowerCase();
+          } else {
+            updateData[key] = (value as string) || null;
+          }
+        }
+
+        const { error } = await (supabase.from('leads') as any)
+          .update(updateData)
+          .eq('id', leadId);
+
+        if (error) throw error;
+      }
+
+      setSaveSuccess(`${editedLeads.size} lead(s) updated`);
+      setEditedLeads(new Map());
+      setEditingCell(null);
+
+      // Refresh leads
+      fetchLeads(teamId, selectedList, searchQuery);
+
+      // Clear success message after 3 seconds
+      setTimeout(() => setSaveSuccess(null), 3000);
+    } catch (err) {
+      console.error('Failed to save leads:', err);
+      setSaveError(err instanceof Error ? err.message : 'Failed to save changes');
+    } finally {
+      setSaving(false);
     }
   };
 
-  if (loading) {
+  const handleDiscardAll = useCallback(() => {
+    setEditedLeads(new Map());
+    setEditingCell(null);
+    setSaveError(null);
+    setSaveSuccess(null);
+  }, []);
+
+  const handleVerifyEmail = async (leadId: string) => {
+    if (!teamId || !accessToken) return;
+    setVerifyingLead(leadId);
+    try {
+      const res = await fetch(`${apiUrl}/leads/${leadId}/verify?team_id=${teamId}`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+        },
+      });
+      if (res.ok) {
+        let result: { status?: string } = {};
+        try {
+          result = await res.json();
+        } catch {
+          // Non-JSON response
+        }
+        setLeads(prev => prev.map(l =>
+          l.id === leadId
+            ? { ...l, email_verification_status: result.status || 'valid' }
+            : l
+        ));
+      } else {
+        console.error('Email verification failed:', await res.text().catch(() => 'Unknown error'));
+      }
+    } catch (err) {
+      console.error('Email verification error:', err);
+    } finally {
+      setVerifyingLead(null);
+    }
+  };
+
+  // Focus the input when editing starts
+  useEffect(() => {
+    if (editingCell && editInputRef.current) {
+      editInputRef.current.focus();
+      editInputRef.current.select();
+    }
+  }, [editingCell]);
+
+  // Helper to render verification icon
+  const VerificationIcon = ({ status }: { status: string | null }) => {
+    const icon = getVerificationIcon(status);
+    const colorClass = getVerificationStatusColor(status);
+
+    const getTitle = () => {
+      switch (status) {
+        case 'valid': return 'Valid email';
+        case 'invalid': return 'Invalid email';
+        case 'catch_all': return 'Catch-all domain';
+        case 'risky': return 'Risky email';
+        case 'verifying': return 'Verifying...';
+        default: return 'Not verified';
+      }
+    };
+
+    switch (icon) {
+      case 'check':
+        return <span title={getTitle()}><CheckCircle className={`w-4 h-4 ${colorClass}`} /></span>;
+      case 'x':
+        return <span title={getTitle()}><XCircle className={`w-4 h-4 ${colorClass}`} /></span>;
+      case 'alert':
+        return <span title={getTitle()}><AlertTriangle className={`w-4 h-4 ${colorClass}`} /></span>;
+      case 'spinner':
+        return <span title={getTitle()}><div className={`w-4 h-4 border-2 border-current border-t-transparent rounded-full animate-spin ${colorClass}`} /></span>;
+      default:
+        return <span title={getTitle()}><HelpCircle className={`w-4 h-4 ${colorClass}`} /></span>;
+    }
+  };
+
+  if (teamLoading || loading) {
     return (
       <div className="flex items-center justify-center min-h-[400px]">
         <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary"></div>
@@ -294,7 +489,7 @@ export default function LeadsPage() {
         <table className="w-full">
           <thead className="bg-muted/50">
             <tr>
-              <th className="px-6 py-3 text-left">
+              <th className="px-6 py-4 text-left">
                 <input
                   type="checkbox"
                   checked={selectedLeads.length === leads.length && leads.length > 0}
@@ -308,28 +503,28 @@ export default function LeadsPage() {
                   className="w-4 h-4 text-primary rounded"
                 />
               </th>
-              <th className="px-6 py-3 text-left text-xs font-medium text-muted-foreground uppercase">
+              <th className="px-6 py-4 text-left text-xs font-medium text-muted-foreground uppercase">
                 Contact
               </th>
-              <th className="px-6 py-3 text-left text-xs font-medium text-muted-foreground uppercase">
+              <th className="px-6 py-4 text-left text-xs font-medium text-muted-foreground uppercase">
                 Company
               </th>
-              <th className="px-6 py-3 text-left text-xs font-medium text-muted-foreground uppercase">
+              <th className="px-6 py-4 text-left text-xs font-medium text-muted-foreground uppercase">
                 List
               </th>
-              <th className="px-6 py-3 text-left text-xs font-medium text-muted-foreground uppercase">
+              <th className="px-6 py-4 text-left text-xs font-medium text-muted-foreground uppercase">
                 Status
               </th>
-              <th className="px-6 py-3 text-left text-xs font-medium text-muted-foreground uppercase">
+              <th className="px-6 py-4 text-left text-xs font-medium text-muted-foreground uppercase">
                 Added
               </th>
-              <th className="px-6 py-3"></th>
+              <th className="px-6 py-4"></th>
             </tr>
           </thead>
           <tbody className="divide-y divide-border">
             {leads.map((lead) => (
-              <tr key={lead.id} className="hover:bg-muted/30">
-                <td className="px-6 py-4">
+              <tr key={lead.id} className="hover:bg-muted/30 transition-colors">
+                <td className="px-6 py-5">
                   <input
                     type="checkbox"
                     checked={selectedLeads.includes(lead.id)}
@@ -343,42 +538,164 @@ export default function LeadsPage() {
                     className="w-4 h-4 text-primary rounded"
                   />
                 </td>
-                <td className="px-6 py-4">
-                  <div>
-                    <p className="font-medium text-foreground">
-                      {lead.first_name || lead.last_name
-                        ? `${lead.first_name || ''} ${lead.last_name || ''}`.trim()
-                        : '-'}
-                    </p>
-                    <p className="text-sm text-muted-foreground">{lead.email}</p>
+                <td className="px-6 py-5">
+                  <div className="space-y-1">
+                    {/* Name fields */}
+                    {editingCell?.leadId === lead.id && (editingCell.field === 'first_name' || editingCell.field === 'last_name') ? (
+                      <div className="flex items-center gap-1.5">
+                        <input
+                          ref={editingCell.field === 'first_name' ? editInputRef : undefined}
+                          type="text"
+                          value={getDisplayValue(lead, 'first_name')}
+                          onChange={(e) => handleCellChange(lead.id, 'first_name', e.target.value)}
+                          onBlur={handleCellBlur}
+                          onKeyDown={(e) => handleCellKeyDown(e, lead.id, 'first_name')}
+                          placeholder="First"
+                          onClick={(e) => { e.stopPropagation(); setEditingCell({ leadId: lead.id, field: 'first_name' }); }}
+                          className={`w-[45%] px-1.5 py-0.5 text-sm font-medium border rounded focus:ring-1 focus:ring-primary/30 focus:border-primary bg-background text-foreground ${isFieldEdited(lead.id, 'first_name') ? 'border-primary/50 bg-primary/5' : 'border-border'}`}
+                        />
+                        <input
+                          ref={editingCell.field === 'last_name' ? editInputRef : undefined}
+                          type="text"
+                          value={getDisplayValue(lead, 'last_name')}
+                          onChange={(e) => handleCellChange(lead.id, 'last_name', e.target.value)}
+                          onBlur={handleCellBlur}
+                          onKeyDown={(e) => handleCellKeyDown(e, lead.id, 'last_name')}
+                          placeholder="Last"
+                          onClick={(e) => { e.stopPropagation(); setEditingCell({ leadId: lead.id, field: 'last_name' }); }}
+                          className={`w-[45%] px-1.5 py-0.5 text-sm font-medium border rounded focus:ring-1 focus:ring-primary/30 focus:border-primary bg-background text-foreground ${isFieldEdited(lead.id, 'last_name') ? 'border-primary/50 bg-primary/5' : 'border-border'}`}
+                        />
+                      </div>
+                    ) : (
+                      <p
+                        onClick={() => handleCellClick(lead.id, 'first_name')}
+                        className={`font-medium cursor-pointer hover:underline hover:decoration-dashed hover:underline-offset-2 hover:decoration-muted-foreground/50 ${
+                          isFieldEdited(lead.id, 'first_name') || isFieldEdited(lead.id, 'last_name')
+                            ? 'text-primary border-l-2 border-primary pl-1.5'
+                            : 'text-foreground'
+                        }`}
+                      >
+                        {(() => {
+                          const fn = getDisplayValue(lead, 'first_name');
+                          const ln = getDisplayValue(lead, 'last_name');
+                          return fn || ln ? `${fn} ${ln}`.trim() : '-';
+                        })()}
+                      </p>
+                    )}
+                    {/* Email field */}
+                    {editingCell?.leadId === lead.id && editingCell.field === 'email' ? (
+                      <input
+                        ref={editInputRef}
+                        type="email"
+                        value={getDisplayValue(lead, 'email')}
+                        onChange={(e) => handleCellChange(lead.id, 'email', e.target.value)}
+                        onBlur={handleCellBlur}
+                        onKeyDown={(e) => handleCellKeyDown(e, lead.id, 'email')}
+                        className={`w-full px-1.5 py-0.5 text-sm border rounded focus:ring-1 focus:ring-primary/30 focus:border-primary bg-background text-foreground ${isFieldEdited(lead.id, 'email') ? 'border-primary/50 bg-primary/5' : 'border-border'}`}
+                      />
+                    ) : (
+                      <div className="flex items-center gap-1.5">
+                        <VerificationIcon status={lead.email_verification_status} />
+                        <p
+                          onClick={() => handleCellClick(lead.id, 'email')}
+                          className={`text-sm cursor-pointer hover:underline hover:decoration-dashed hover:underline-offset-2 hover:decoration-muted-foreground/50 ${
+                            isFieldEdited(lead.id, 'email')
+                              ? 'text-primary border-l-2 border-primary pl-1.5'
+                              : 'text-muted-foreground'
+                          }`}
+                        >
+                          {getDisplayValue(lead, 'email')}
+                        </p>
+                      </div>
+                    )}
                   </div>
                 </td>
-                <td className="px-6 py-4">
-                  <div>
-                    <p className="text-foreground">{lead.company || '-'}</p>
-                    {lead.title && <p className="text-sm text-muted-foreground">{lead.title}</p>}
+                <td className="px-6 py-5">
+                  <div className="space-y-1">
+                    {/* Company field */}
+                    {editingCell?.leadId === lead.id && editingCell.field === 'company' ? (
+                      <input
+                        ref={editInputRef}
+                        type="text"
+                        value={getDisplayValue(lead, 'company')}
+                        onChange={(e) => handleCellChange(lead.id, 'company', e.target.value)}
+                        onBlur={handleCellBlur}
+                        onKeyDown={(e) => handleCellKeyDown(e, lead.id, 'company')}
+                        placeholder="Company"
+                        className={`w-full px-1.5 py-0.5 text-sm border rounded focus:ring-1 focus:ring-primary/30 focus:border-primary bg-background text-foreground ${isFieldEdited(lead.id, 'company') ? 'border-primary/50 bg-primary/5' : 'border-border'}`}
+                      />
+                    ) : (
+                      <p
+                        onClick={() => handleCellClick(lead.id, 'company')}
+                        className={`cursor-pointer hover:underline hover:decoration-dashed hover:underline-offset-2 hover:decoration-muted-foreground/50 ${
+                          isFieldEdited(lead.id, 'company')
+                            ? 'text-primary border-l-2 border-primary pl-1.5'
+                            : 'text-foreground'
+                        }`}
+                      >
+                        {getDisplayValue(lead, 'company') || '-'}
+                      </p>
+                    )}
+                    {/* Title field */}
+                    {editingCell?.leadId === lead.id && editingCell.field === 'title' ? (
+                      <input
+                        ref={editInputRef}
+                        type="text"
+                        value={getDisplayValue(lead, 'title')}
+                        onChange={(e) => handleCellChange(lead.id, 'title', e.target.value)}
+                        onBlur={handleCellBlur}
+                        onKeyDown={(e) => handleCellKeyDown(e, lead.id, 'title')}
+                        placeholder="Job title"
+                        className={`w-full px-1.5 py-0.5 text-sm border rounded focus:ring-1 focus:ring-primary/30 focus:border-primary bg-background text-foreground ${isFieldEdited(lead.id, 'title') ? 'border-primary/50 bg-primary/5' : 'border-border'}`}
+                      />
+                    ) : (
+                      <p
+                        onClick={() => handleCellClick(lead.id, 'title')}
+                        className={`text-sm cursor-pointer hover:underline hover:decoration-dashed hover:underline-offset-2 hover:decoration-muted-foreground/50 ${
+                          isFieldEdited(lead.id, 'title')
+                            ? 'text-primary border-l-2 border-primary pl-1.5'
+                            : 'text-muted-foreground'
+                        }`}
+                      >
+                        {getDisplayValue(lead, 'title') || '-'}
+                      </p>
+                    )}
                   </div>
                 </td>
-                <td className="px-6 py-4">
+                <td className="px-6 py-5">
                   <span className="text-sm text-muted-foreground">
                     {lead.lead_lists?.name || '-'}
                   </span>
                 </td>
-                <td className="px-6 py-4">
-                  <span className={`inline-flex px-2.5 py-0.5 rounded-full text-xs font-medium ${getStatusColor(lead.status)}`}>
-                    {lead.status.replace('_', ' ')}
+                <td className="px-6 py-5">
+                  <span className={`inline-flex px-2.5 py-0.5 rounded-full text-xs font-medium ${getLeadStatusColor(lead.status)}`}>
+                    {formatLeadStatus(lead.status)}
                   </span>
                 </td>
-                <td className="px-6 py-4 text-sm text-muted-foreground">
+                <td className="px-6 py-5 text-sm text-muted-foreground">
                   {new Date(lead.created_at).toLocaleDateString()}
                 </td>
-                <td className="px-6 py-4">
-                  <Link
-                    href={`/leads/${lead.id}`}
-                    className="p-2 text-muted-foreground hover:text-foreground rounded-lg hover:bg-accent inline-block"
-                  >
-                    <MoreHorizontal className="w-4 h-4" />
-                  </Link>
+                <td className="px-6 py-5">
+                  <div className="flex items-center gap-1">
+                    <button
+                      onClick={() => handleVerifyEmail(lead.id)}
+                      disabled={verifyingLead === lead.id || !accessToken}
+                      className="p-2 text-muted-foreground hover:text-green-600 dark:hover:text-green-400 rounded-lg hover:bg-green-50 dark:hover:bg-green-500/10 disabled:opacity-50 transition-colors"
+                      title="Verify email"
+                    >
+                      {verifyingLead === lead.id ? (
+                        <RefreshCw className="w-4 h-4 animate-spin" />
+                      ) : (
+                        <ShieldCheck className="w-4 h-4" />
+                      )}
+                    </button>
+                    <Link
+                      href={`/leads/${lead.id}`}
+                      className="p-2 text-muted-foreground hover:text-foreground rounded-lg hover:bg-accent inline-block"
+                    >
+                      <MoreHorizontal className="w-4 h-4" />
+                    </Link>
+                  </div>
                 </td>
               </tr>
             ))}
@@ -401,6 +718,53 @@ export default function LeadsPage() {
           </div>
         )}
       </div>
+
+      {/* Floating Save Bar */}
+      {editedLeads.size > 0 && (
+        <div className="sticky bottom-4 mx-auto max-w-2xl animate-in slide-in-from-bottom-4 fade-in duration-200">
+          <div className="flex items-center justify-between gap-4 px-6 py-3 bg-card border border-border rounded-xl shadow-lg">
+            <div className="flex items-center gap-3">
+              <div className="w-2 h-2 rounded-full bg-primary animate-pulse" />
+              <span className="text-sm font-medium text-foreground">
+                {editedLeads.size} lead{editedLeads.size !== 1 ? 's' : ''} modified
+              </span>
+              {saveError && (
+                <span className="text-sm text-red-500">{saveError}</span>
+              )}
+              {saveSuccess && (
+                <span className="text-sm text-green-600 dark:text-green-400">{saveSuccess}</span>
+              )}
+            </div>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={handleDiscardAll}
+                disabled={saving}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 text-sm text-muted-foreground hover:text-foreground rounded-lg hover:bg-accent disabled:opacity-50"
+              >
+                <X className="w-3.5 h-3.5" />
+                Discard
+              </button>
+              <button
+                onClick={handleSaveAll}
+                disabled={saving}
+                className="inline-flex items-center gap-1.5 px-4 py-1.5 text-sm bg-primary text-white rounded-lg hover:bg-primary/90 disabled:opacity-50"
+              >
+                {saving ? (
+                  <>
+                    <div className="animate-spin rounded-full h-3.5 w-3.5 border-b-2 border-white" />
+                    Saving...
+                  </>
+                ) : (
+                  <>
+                    <Save className="w-3.5 h-3.5" />
+                    Save Changes
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

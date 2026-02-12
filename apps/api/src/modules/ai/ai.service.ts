@@ -2,6 +2,7 @@ import { Injectable, Inject } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { SupabaseClient } from '@supabase/supabase-js';
 import { SUPABASE_CLIENT } from '../../shared/database/database.module';
+import { getLanguageFromCountry } from '@aninda/shared';
 
 type ToneType = 'professional' | 'friendly' | 'short' | 'follow_up';
 type IntentType = 'interested' | 'meeting_request' | 'question' | 'not_interested' | 'unsubscribe' | 'out_of_office' | 'auto_reply' | 'bounce' | 'neutral';
@@ -36,9 +37,17 @@ export class AIService {
     private readonly supabase: SupabaseClient,
   ) {
     this.apiKey = this.configService.get<string>('OPENROUTER_API_KEY') || '';
+    console.log('[AI Service] Initialized with API key:', this.apiKey ? `${this.apiKey.substring(0, 10)}...` : 'NOT CONFIGURED');
   }
 
-  private async callOpenRouter(messages: OpenRouterMessage[], maxTokens = 1000): Promise<string> {
+  private async callOpenRouter(messages: OpenRouterMessage[], maxTokens = 1000, modelOverride?: string, temperature: number = 0.7): Promise<string> {
+    if (!this.apiKey) {
+      throw new Error('OpenRouter API key not configured. Please set OPENROUTER_API_KEY in your .env file.');
+    }
+
+    const effectiveModel = modelOverride || this.model;
+    console.log('[AI Service] Calling OpenRouter with model:', effectiveModel);
+
     const response = await fetch(this.apiUrl, {
       method: 'POST',
       headers: {
@@ -48,20 +57,54 @@ export class AIService {
         'X-Title': 'Cold Email Platform',
       },
       body: JSON.stringify({
-        model: this.model,
+        model: effectiveModel,
         messages,
         max_tokens: maxTokens,
-        temperature: 0.7,
+        temperature,
       }),
     });
 
     if (!response.ok) {
       const error = await response.text();
-      throw new Error(`OpenRouter API error: ${error}`);
+      console.error('[AI Service] OpenRouter API error:', response.status, error);
+      throw new Error(`OpenRouter API error (${response.status}): ${error}`);
     }
 
     const data: OpenRouterResponse = await response.json();
+    console.log('[AI Service] OpenRouter response received, tokens used:', data.usage?.total_tokens);
     return data.choices[0]?.message?.content || '';
+  }
+
+  /**
+   * Validate and fix AI-generated content for proper variable usage
+   * Detects hardcoded names and replaces them with variable placeholders
+   */
+  private validateAndFixVariables(content: string): {
+    fixed: string;
+    warnings: string[];
+  } {
+    const warnings: string[] = [];
+    let fixed = content;
+
+    // Detect hardcoded names like "Hi John," or "Dear Sarah,"
+    const namePatterns = [
+      /\b(Hi|Hello|Hey|Dear)\s+([A-Z][a-z]+)([,\s])/g,
+      /\b(Mr\.|Ms\.|Mrs\.)\s+([A-Z][a-z]+)/g,
+    ];
+
+    for (const pattern of namePatterns) {
+      const matches = content.match(pattern);
+      if (matches && matches.length > 0) {
+        warnings.push(`Detected hardcoded name: "${matches[0].trim()}"`);
+        // Replace hardcoded names with variable placeholder
+        fixed = fixed.replace(
+          /\b(Hi|Hello|Hey|Dear)\s+([A-Z][a-z]+)([,\s])/g,
+          '$1 {{firstName}}$3'
+        );
+      }
+    }
+
+    return { fixed, warnings };
   }
 
   // ============================================
@@ -87,7 +130,19 @@ export class AIService {
         content: `You are an expert cold email assistant. Generate a reply to the incoming email.
 ${toneInstructions[tone]}
 
-Rules:
+CRITICAL - Template Variables (MUST USE EXACTLY AS SHOWN):
+- {{firstName}} or {{first_name}} - recipient's first name
+- {{lastName}} or {{last_name}} - recipient's last name
+- {{company}} - their company name
+- {{title}} - their job title
+
+IMPORTANT RULES:
+1. ALWAYS use variable placeholders - NEVER write actual names
+2. Example CORRECT: "Hi {{firstName}},"
+3. Example WRONG: "Hi John," (hardcoded!)
+4. If you want to use a name, you MUST use {{firstName}}
+
+Other Rules:
 - Never use spam words like "free", "limited time", "act now"
 - Be genuine and helpful
 - Match the recipient's communication style
@@ -111,13 +166,20 @@ Return your response in this exact JSON format:
 
     try {
       const parsed = JSON.parse(response);
+      const { fixed, warnings } = this.validateAndFixVariables(parsed.reply || response);
+
+      if (warnings.length > 0) {
+        console.warn('[AI] Variable validation warnings:', warnings);
+      }
+
       return {
-        reply: parsed.reply || response,
+        reply: fixed,
         suggestedSubject: parsed.suggestedSubject || 'Re: ',
       };
     } catch {
+      const { fixed } = this.validateAndFixVariables(response);
       return {
-        reply: response,
+        reply: fixed,
         suggestedSubject: 'Re: ',
       };
     }
@@ -200,9 +262,26 @@ Return your response in this exact JSON format:
         role: 'system',
         content: `You are an expert cold email copywriter. Generate a complete cold email campaign sequence.
 
+CRITICAL - Template Variables (MUST USE EXACTLY AS SHOWN):
+- {{first_name}} - lead's first name (REQUIRED in greeting)
+- {{last_name}} - lead's last name
+- {{company}} - their company name
+- {{title}} - their job title
+
+IMPORTANT RULES:
+1. ALWAYS start with: "{Hi|Hello} {{first_name}},"
+2. NEVER write actual names like "John"
+3. Example CORRECT: "{Hi|Hello} {{first_name}},"
+4. Example WRONG: "Hi John," or "Hello there,"
+
+Also support:
+- Spintax for variety: {Hello|Hi|Hey} (single braces)
+- Conditionals: {if:company}I noticed you work at {{company}}.{/if}
+- Fallbacks: {{company|your company}}
+
 Guidelines:
 - Write compelling, non-spammy emails
-- Use personalization placeholders: {{first_name}}, {{company}}, {{title}}
+- Use personalization placeholders as shown above
 - Each email should be 50-150 words
 - Include clear calls to action
 - Follow-ups should reference previous emails naturally
@@ -232,7 +311,15 @@ ${input.companyName ? `Company: ${input.companyName}` : ''}`,
     const response = await this.callOpenRouter(messages, 2000);
 
     try {
-      return JSON.parse(response);
+      const parsed = JSON.parse(response);
+
+      return {
+        subject: parsed.subject,
+        firstEmail: this.validateAndFixVariables(parsed.firstEmail).fixed,
+        followUp1: this.validateAndFixVariables(parsed.followUp1).fixed,
+        followUp2: this.validateAndFixVariables(parsed.followUp2).fixed,
+        breakupEmail: this.validateAndFixVariables(parsed.breakupEmail).fixed,
+      };
     } catch {
       throw new Error('Failed to generate campaign copy');
     }
@@ -496,6 +583,370 @@ Return your response in this exact JSON format:
       return JSON.parse(response);
     } catch {
       throw new Error('Failed to generate objection response');
+    }
+  }
+
+  // ============================================
+  // 8. AI CSV Column Mapping
+  // ============================================
+
+  async mapCsvColumns(
+    headers: string[],
+    sampleRows: string[][],
+  ): Promise<Record<string, string | null>> {
+    const targetFields = [
+      { field: 'email', description: 'Email address (required)' },
+      { field: 'first_name', description: 'First name / given name' },
+      { field: 'last_name', description: 'Last name / surname / family name' },
+      { field: 'company', description: 'Company / organization name' },
+      { field: 'title', description: 'Job title / position / role' },
+      { field: 'phone', description: 'Phone number' },
+      { field: 'linkedin_url', description: 'LinkedIn profile URL' },
+      { field: 'website', description: 'Website URL' },
+      { field: 'country', description: 'Country' },
+      { field: 'city', description: 'City' },
+      { field: 'timezone', description: 'Timezone' },
+      { field: 'analysis_notes', description: 'Analysis notes / research notes about the lead' },
+    ];
+
+    const sampleData = sampleRows.slice(0, 3).map((row) => {
+      const obj: Record<string, string> = {};
+      headers.forEach((h, i) => {
+        obj[h] = row[i] ?? '';
+      });
+      return obj;
+    });
+
+    const messages: OpenRouterMessage[] = [
+      {
+        role: 'system',
+        content: `You are a data mapping expert. Given CSV column headers and sample data, determine which lead field each column maps to.
+
+Available target fields:
+${targetFields.map((f) => `- "${f.field}": ${f.description}`).join('\n')}
+
+Rules:
+1. Each target field can only be mapped once
+2. If a column doesn't match any target field, map it to null
+3. Use the column header name AND the sample data to make your decision
+4. Common aliases: "org"/"organization" -> company, "role"/"position" -> title, "nombre" -> first_name, "apellido" -> last_name, "correo" -> email, "telefono" -> phone, "empresa" -> company, etc.
+5. Be smart about multi-language headers
+
+Return ONLY a JSON object mapping each CSV header to a target field name or null.
+Example: {"Email Address": "email", "First": "first_name", "Revenue": null}`,
+      },
+      {
+        role: 'user',
+        content: `CSV Headers: ${JSON.stringify(headers)}
+
+Sample data (first 3 rows):
+${JSON.stringify(sampleData, null, 2)}
+
+Map each header to the most appropriate target field or null.`,
+      },
+    ];
+
+    try {
+      const response = await this.callOpenRouter(messages, 500);
+      // Extract JSON from response (handle markdown code blocks)
+      const jsonMatch = response.match(/\{[\s\S]*\}/);
+      if (!jsonMatch) {
+        console.warn('[AI] Could not extract JSON from column mapping response');
+        return {};
+      }
+      const parsed = JSON.parse(jsonMatch[0]);
+
+      // Validate: only allow known target fields
+      const validFields = new Set(targetFields.map((f) => f.field));
+      const result: Record<string, string | null> = {};
+      for (const header of headers) {
+        const mapped = parsed[header];
+        if (mapped && validFields.has(mapped)) {
+          result[header] = mapped;
+        } else {
+          result[header] = null;
+        }
+      }
+
+      return result;
+    } catch (error) {
+      console.warn('[AI] Column mapping failed, returning empty mapping:', error);
+      return {};
+    }
+  }
+
+  // ============================================
+  // 9. AI Smart Template Personalization
+  // ============================================
+
+  /**
+   * Build a structured lead context block for AI prompts
+   */
+  private buildLeadContextBlock(lead: {
+    firstName?: string; lastName?: string; company?: string; title?: string;
+    analysisNotes?: string; country?: string; city?: string;
+    linkedinUrl?: string; website?: string;
+  }): string {
+    const sections: string[] = [];
+
+    // Recipient profile
+    const profile: string[] = [];
+    if (lead.firstName || lead.lastName) {
+      profile.push(`- Name: ${[lead.firstName, lead.lastName].filter(Boolean).join(' ')}`);
+    }
+    if (lead.title) profile.push(`- Title: ${lead.title}`);
+    if (lead.company) profile.push(`- Company: ${lead.company}`);
+    if (profile.length > 0) {
+      sections.push(`RECIPIENT PROFILE:\n${profile.join('\n')}`);
+    }
+
+    // Location
+    const location: string[] = [];
+    if (lead.country) location.push(`- Country: ${lead.country}`);
+    if (lead.city) location.push(`- City: ${lead.city}`);
+    if (location.length > 0) {
+      sections.push(`LOCATION:\n${location.join('\n')}`);
+    }
+
+    // Digital presence
+    const digital: string[] = [];
+    if (lead.linkedinUrl) digital.push(`- LinkedIn: ${lead.linkedinUrl}`);
+    if (lead.website) digital.push(`- Website: ${lead.website}`);
+    if (digital.length > 0) {
+      sections.push(`DIGITAL PRESENCE:\n${digital.join('\n')}`);
+    }
+
+    // Research notes
+    if (lead.analysisNotes) {
+      sections.push(`RESEARCH NOTES:\n${lead.analysisNotes}`);
+    }
+
+    return sections.length > 0 ? sections.join('\n\n') : 'No lead information available.';
+  }
+
+  /**
+   * Build a structured sender context block for AI prompts
+   */
+  private buildSenderContextBlock(sender?: {
+    firstName?: string; lastName?: string; company?: string;
+    title?: string; website?: string;
+  }): string {
+    if (!sender) return '';
+
+    const lines: string[] = [];
+    if (sender.firstName || sender.lastName) {
+      lines.push(`- Name: ${[sender.firstName, sender.lastName].filter(Boolean).join(' ')}`);
+    }
+    if (sender.title) lines.push(`- Title: ${sender.title}`);
+    if (sender.company) lines.push(`- Company: ${sender.company}`);
+    if (sender.website) lines.push(`- Website: ${sender.website}`);
+
+    return lines.length > 0 ? `SENDER PROFILE:\n${lines.join('\n')}` : '';
+  }
+
+  async personalizeEmail(
+    subject: string,
+    body: string,
+    lead: {
+      firstName?: string; lastName?: string; company?: string; title?: string;
+      analysisNotes?: string; country?: string; city?: string;
+      linkedinUrl?: string; website?: string;
+    },
+    tone: string = 'professional',
+    country?: string,
+    creatorNotes?: string,
+    toneEnabled: boolean = false,
+    languageMatch: boolean = true,
+    sender?: {
+      firstName?: string; lastName?: string; company?: string;
+      title?: string; website?: string;
+    },
+  ): Promise<{ subject: string; body: string }> {
+    // Find all [...] placeholders in BOTH subject and body
+    const placeholderRegex = /\[([^\[\]]+)\]/g;
+    const subjectPlaceholders: { full: string; instruction: string }[] = [];
+    const bodyPlaceholders: { full: string; instruction: string }[] = [];
+    let match;
+
+    while ((match = placeholderRegex.exec(subject)) !== null) {
+      subjectPlaceholders.push({ full: match[0], instruction: match[1] });
+    }
+    placeholderRegex.lastIndex = 0;
+    while ((match = placeholderRegex.exec(body)) !== null) {
+      bodyPlaceholders.push({ full: match[0], instruction: match[1] });
+    }
+
+    // No placeholders → return original
+    if (subjectPlaceholders.length === 0 && bodyPlaceholders.length === 0) {
+      return { subject, body };
+    }
+
+    const language = languageMatch ? getLanguageFromCountry(country) : 'English';
+    const leadContextBlock = this.buildLeadContextBlock(lead);
+    const senderContextBlock = this.buildSenderContextBlock(sender);
+    const smartModel = this.configService.get<string>('SMART_TEMPLATE_MODEL') || 'openai/gpt-4o-mini';
+
+    const systemPrompt = `You are an elite B2B cold email copywriter specializing in personalized outreach.
+
+YOUR TASK: Generate ONLY the text content for the placeholder described below. Return raw text — no JSON, no quotes, no labels.
+
+WRITING RULES:
+- Write a concise, natural sentence or phrase (1-3 sentences max)
+- Reference SPECIFIC details from the recipient's profile (company name, role, industry, recent news)
+- Sound like a real human wrote this — conversational, not corporate
+- Match the email's existing voice and flow
+
+CRITICAL DON'TS:
+- Do NOT use generic filler ("I hope this finds you well", "I wanted to reach out", "I came across your profile")
+- Do NOT include greetings ("Hi", "Dear") or sign-offs ("Best regards", "Thanks")
+- Do NOT include template variables like {{firstName}} or {{company}}
+- Do NOT use spam trigger words (free, guarantee, act now, limited time, exclusive offer)
+- Do NOT use literal placeholders like [Your Name] or [Company Name]
+- Do NOT mention AI, automation, or personalization
+- Do NOT write more than 3 sentences
+
+EXAMPLES OF GOOD OUTPUT:
+- For "[personalized opening based on company]": "Noticed Acme Corp just closed your Series B — congrats. Scaling the SDR team at that pace usually means outbound infrastructure becomes a bottleneck fast."
+- For "[value proposition]": "We help engineering-led teams like yours cut cold email setup time from weeks to hours, with built-in deliverability protection."
+- For "[relevant pain point]": "Most VP-level folks I talk to at companies your size say their biggest challenge is getting replies without landing in spam."
+
+EXAMPLES OF BAD OUTPUT (never write like this):
+- "I hope this message finds you well. I wanted to reach out regarding..."
+- "As a leader in your industry, you know the importance of..."
+- "I came across your profile and was impressed by your work at..."`;
+
+    const generateForPlaceholder = async (ph: { full: string; instruction: string }): Promise<{ full: string; content: string } | null> => {
+      try {
+        const userPrompt = `Generate content for this placeholder: "${ph.instruction}"
+
+${leadContextBlock}
+
+${senderContextBlock ? senderContextBlock + '\n' : ''}${creatorNotes ? `CAMPAIGN CREATOR INSTRUCTIONS (high priority): ${creatorNotes}\n` : ''}
+Language: ${language}
+Tone: ${toneEnabled ? tone : 'professional'}
+
+Write ONLY the replacement text. Nothing else.`;
+
+        const messages: OpenRouterMessage[] = [
+          { role: 'system', content: systemPrompt },
+          { role: 'user', content: userPrompt },
+        ];
+
+        const response = await this.callOpenRouter(messages, 500, smartModel, 0.4);
+        const content = response?.trim();
+        return content ? { full: ph.full, content } : null;
+      } catch (err) {
+        console.warn(`[AI] Failed to generate for placeholder "${ph.instruction}":`, err);
+        return null;
+      }
+    };
+
+    // Process subject placeholders
+    let resultSubject = subject;
+    for (const ph of subjectPlaceholders) {
+      const result = await generateForPlaceholder(ph);
+      if (result) {
+        resultSubject = resultSubject.replace(result.full, result.content);
+      }
+    }
+
+    // Process body placeholders
+    let resultBody = body;
+    for (const ph of bodyPlaceholders) {
+      const result = await generateForPlaceholder(ph);
+      if (result) {
+        resultBody = resultBody.replace(result.full, result.content);
+      }
+    }
+
+    return { subject: resultSubject, body: resultBody };
+  }
+
+  // ============================================
+  // 10. AI Tone & Language Transformation
+  // ============================================
+
+  async applyToneAndLanguage(
+    subject: string,
+    body: string,
+    tone: string,
+    toneEnabled: boolean,
+    country: string | undefined,
+    languageMatch: boolean,
+    creatorNotes?: string | null,
+  ): Promise<{ subject: string; body: string } | null> {
+    const language = languageMatch ? getLanguageFromCountry(country) : 'English';
+    const needsTone = toneEnabled && tone !== 'professional';
+    const needsTranslation = languageMatch && language !== 'English';
+
+    // Skip if neither tone nor language adjustment is needed
+    if (!needsTone && !needsTranslation) {
+      return null;
+    }
+
+    const instructions: string[] = [];
+    if (needsTone) {
+      instructions.push(`TONE ADJUSTMENT: Rewrite ONLY the body paragraphs to match a "${tone}" tone. Do NOT modify the greeting line (e.g., "Hi {{firstName}},") or the closing/signature. Keep the same meaning and structure, just adjust the tone of the body paragraphs.`);
+    }
+    if (needsTranslation) {
+      instructions.push(`LANGUAGE TRANSLATION: Translate the ENTIRE email (subject line, greeting, body, and closing) into ${language}. Preserve all template syntax exactly as-is during translation.`);
+    }
+
+    const orderNote = needsTone && needsTranslation
+      ? 'Apply the tone adjustment first, then translate the result.'
+      : '';
+
+    const messages: OpenRouterMessage[] = [
+      {
+        role: 'system',
+        content: `You are an email language and tone specialist. Transform the email below according to the instructions.
+
+ABSOLUTE RULES — BREAKING THESE FAILS THE TASK:
+1. PRESERVE every {{variable}} placeholder EXACTLY (e.g., {{firstName}}, {{company}}, {{senderCompany}})
+2. PRESERVE every HTML tag EXACTLY (e.g., <br>, <p>, <a href="...">)
+3. PRESERVE every spintax pattern EXACTLY (e.g., {Hello|Hi|Hey})
+4. PRESERVE every conditional block EXACTLY (e.g., {if:company}...{/if})
+5. Do NOT add content that wasn't in the original (no new greetings, closings, or paragraphs)
+6. Do NOT remove content that was in the original
+7. Do NOT use spam trigger words (free, guarantee, act now, limited time)
+8. Keep the email roughly the same length — do not expand or shrink significantly
+
+Return ONLY a JSON object: {"subject": "...", "body": "..."}
+
+${orderNote}`,
+      },
+      {
+        role: 'user',
+        content: `${instructions.join('\n\n')}
+${creatorNotes ? `\nCAMPAIGN CREATOR INSTRUCTIONS (high priority): ${creatorNotes}` : ''}
+
+SUBJECT:
+${subject}
+
+BODY:
+${body}
+
+Return ONLY a JSON object: {"subject": "...", "body": "..."}`,
+      },
+    ];
+
+    const smartModel = this.configService.get<string>('SMART_TEMPLATE_MODEL') || 'openai/gpt-4o-mini';
+
+    try {
+      const response = await this.callOpenRouter(messages, 2000, smartModel, 0.4);
+      const jsonMatch = response.match(/\{[\s\S]*\}/);
+      if (!jsonMatch) {
+        console.warn('[AI] applyToneAndLanguage: Could not extract JSON from response');
+        return null;
+      }
+      const parsed = JSON.parse(jsonMatch[0]);
+      return {
+        subject: parsed.subject || subject,
+        body: parsed.body || body,
+      };
+    } catch (err) {
+      console.warn('[AI] applyToneAndLanguage failed:', err);
+      return null;
     }
   }
 

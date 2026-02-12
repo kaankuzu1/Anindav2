@@ -1,4 +1,4 @@
-import { Injectable, Inject } from '@nestjs/common';
+import { Injectable, Inject, NotFoundException } from '@nestjs/common';
 import { SupabaseClient } from '@supabase/supabase-js';
 import { SUPABASE_CLIENT } from '../../shared/database/database.module';
 
@@ -71,6 +71,18 @@ export class AnalyticsService {
       ? inboxes.reduce((acc, i) => acc + (i.health_score ?? 0), 0) / inboxes.length
       : 0;
 
+    // Get spam events
+    const { data: spamEvents } = await this.supabase
+      .from('email_events')
+      .select('id')
+      .eq('team_id', teamId)
+      .gte('created_at', startDate.toISOString())
+      .lte('created_at', endDate.toISOString())
+      .eq('event_type', 'spam_reported');
+
+    const emailsSpamReported = spamEvents?.length ?? 0;
+    const spamRate = emailsSent > 0 ? (emailsSpamReported / emailsSent) * 100 : 0;
+
     return {
       overview: {
         emailsSent,
@@ -82,6 +94,7 @@ export class AnalyticsService {
         interestedReplies,
         totalLeads: totalLeads ?? 0,
         activeInboxes,
+        emailsSpamReported,
       },
       rates: {
         openRate: Math.round(openRate * 10) / 10,
@@ -89,6 +102,7 @@ export class AnalyticsService {
         replyRate: Math.round(replyRate * 10) / 10,
         bounceRate: Math.round(bounceRate * 10) / 10,
         positiveReplyRate: Math.round(positiveReplyRate * 10) / 10,
+        spamRate: Math.round(spamRate * 10) / 10,
       },
       health: {
         avgHealthScore: Math.round(avgHealthScore),
@@ -260,6 +274,18 @@ export class AnalyticsService {
   }
 
   async getSequencePerformance(teamId: string, campaignId: string) {
+    // Verify campaign belongs to team
+    const { data: campaign } = await this.supabase
+      .from('campaigns')
+      .select('id')
+      .eq('id', campaignId)
+      .eq('team_id', teamId)
+      .single();
+
+    if (!campaign) {
+      throw new NotFoundException('Campaign not found');
+    }
+
     const { data, error } = await this.supabase
       .from('sequences')
       .select('step_number, subject, sent_count, opened_count, replied_count')
@@ -306,5 +332,230 @@ export class AnalyticsService {
       ...stats,
       openRate: stats.sent > 0 ? Math.round((stats.opened / stats.sent) * 1000) / 10 : 0,
     }));
+  }
+
+  /**
+   * Get time-to-reply aggregation metrics
+   */
+  async getTimeToReplyStats(teamId: string, days = 30) {
+    const startDate = new Date();
+    startDate.setDate(startDate.getDate() - days);
+
+    // Get replies with their original email sent_at
+    const { data: replies, error } = await this.supabase
+      .from('replies')
+      .select('received_at, email_id, emails!inner(sent_at, campaign_id)')
+      .eq('team_id', teamId)
+      .gte('received_at', startDate.toISOString());
+
+    if (error) throw error;
+
+    const replyTimes: number[] = [];
+    const byCampaign: Record<string, number[]> = {};
+
+    for (const reply of replies ?? []) {
+      const email = reply.emails as any;
+      if (email?.sent_at && reply.received_at) {
+        const sentAt = new Date(email.sent_at).getTime();
+        const receivedAt = new Date(reply.received_at).getTime();
+        const replyTimeMinutes = (receivedAt - sentAt) / (1000 * 60);
+
+        if (replyTimeMinutes > 0 && replyTimeMinutes < 60 * 24 * 30) { // Filter outliers
+          replyTimes.push(replyTimeMinutes);
+
+          if (email.campaign_id) {
+            if (!byCampaign[email.campaign_id]) {
+              byCampaign[email.campaign_id] = [];
+            }
+            byCampaign[email.campaign_id].push(replyTimeMinutes);
+          }
+        }
+      }
+    }
+
+    const calculateStats = (times: number[]) => {
+      if (times.length === 0) return { avg: 0, median: 0, min: 0, max: 0, count: 0 };
+      const sorted = [...times].sort((a, b) => a - b);
+      return {
+        avg: Math.round(times.reduce((a, b) => a + b, 0) / times.length),
+        median: Math.round(sorted[Math.floor(sorted.length / 2)]),
+        min: Math.round(sorted[0]),
+        max: Math.round(sorted[sorted.length - 1]),
+        count: times.length,
+      };
+    };
+
+    const overallStats = calculateStats(replyTimes);
+    const campaignStats: Record<string, ReturnType<typeof calculateStats>> = {};
+    for (const [campaignId, times] of Object.entries(byCampaign)) {
+      campaignStats[campaignId] = calculateStats(times);
+    }
+
+    // Categorize by time buckets
+    const buckets = {
+      under1Hour: replyTimes.filter(t => t < 60).length,
+      under4Hours: replyTimes.filter(t => t >= 60 && t < 240).length,
+      under24Hours: replyTimes.filter(t => t >= 240 && t < 1440).length,
+      under1Week: replyTimes.filter(t => t >= 1440 && t < 10080).length,
+      over1Week: replyTimes.filter(t => t >= 10080).length,
+    };
+
+    return {
+      overall: {
+        ...overallStats,
+        avgHours: Math.round(overallStats.avg / 60 * 10) / 10,
+        medianHours: Math.round(overallStats.median / 60 * 10) / 10,
+      },
+      buckets,
+      byCampaign: campaignStats,
+    };
+  }
+
+  /**
+   * Detect velocity anomalies in email sending
+   */
+  async detectVelocityAnomalies(teamId: string, inboxId?: string) {
+    const now = new Date();
+    const last24h = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+    const last7d = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+
+    let query = this.supabase
+      .from('emails')
+      .select('sent_at, inbox_id')
+      .eq('team_id', teamId)
+      .gte('sent_at', last7d.toISOString())
+      .eq('status', 'sent');
+
+    if (inboxId) {
+      query = query.eq('inbox_id', inboxId);
+    }
+
+    const { data: emails, error } = await query;
+
+    if (error) throw error;
+
+    // Calculate hourly velocity for the past week
+    const hourlyVelocity: Record<string, number> = {};
+    for (const email of emails ?? []) {
+      const hour = new Date(email.sent_at).toISOString().slice(0, 13);
+      hourlyVelocity[hour] = (hourlyVelocity[hour] ?? 0) + 1;
+    }
+
+    const velocities = Object.values(hourlyVelocity);
+    if (velocities.length < 24) {
+      return { anomalies: [], normalRange: { min: 0, max: 0, avg: 0 } };
+    }
+
+    // Calculate statistics (excluding last 24h for baseline)
+    const historicalVelocities = Object.entries(hourlyVelocity)
+      .filter(([hour]) => new Date(hour) < last24h)
+      .map(([, count]) => count);
+
+    const avg = historicalVelocities.reduce((a, b) => a + b, 0) / historicalVelocities.length;
+    const stdDev = Math.sqrt(
+      historicalVelocities.reduce((sum, v) => sum + Math.pow(v - avg, 2), 0) / historicalVelocities.length
+    );
+
+    const normalMin = Math.max(0, avg - 2 * stdDev);
+    const normalMax = avg + 2 * stdDev;
+
+    // Find anomalies in last 24h
+    const anomalies: Array<{ hour: string; count: number; expectedRange: [number, number]; severity: 'warning' | 'critical' }> = [];
+
+    const recentHours = Object.entries(hourlyVelocity)
+      .filter(([hour]) => new Date(hour) >= last24h);
+
+    for (const [hour, count] of recentHours) {
+      if (count > normalMax * 2) {
+        anomalies.push({
+          hour,
+          count,
+          expectedRange: [Math.round(normalMin), Math.round(normalMax)],
+          severity: 'critical',
+        });
+      } else if (count > normalMax) {
+        anomalies.push({
+          hour,
+          count,
+          expectedRange: [Math.round(normalMin), Math.round(normalMax)],
+          severity: 'warning',
+        });
+      }
+    }
+
+    return {
+      anomalies,
+      normalRange: {
+        min: Math.round(normalMin),
+        max: Math.round(normalMax),
+        avg: Math.round(avg),
+      },
+      recentVelocity: recentHours.map(([hour, count]) => ({ hour, count })),
+    };
+  }
+
+  /**
+   * Get bounce rate by recipient domain
+   */
+  async getBounceRateByDomain(teamId: string, days = 30, limit = 20) {
+    const startDate = new Date();
+    startDate.setDate(startDate.getDate() - days);
+
+    const { data: emails, error } = await this.supabase
+      .from('emails')
+      .select('to_email, status')
+      .eq('team_id', teamId)
+      .gte('sent_at', startDate.toISOString())
+      .in('status', ['sent', 'bounced']);
+
+    if (error) throw error;
+
+    // Extract domain and count
+    const domainStats: Record<string, { sent: number; bounced: number }> = {};
+
+    for (const email of emails ?? []) {
+      const domain = email.to_email?.split('@')[1]?.toLowerCase();
+      if (!domain) continue;
+
+      if (!domainStats[domain]) {
+        domainStats[domain] = { sent: 0, bounced: 0 };
+      }
+
+      domainStats[domain].sent++;
+      if (email.status === 'bounced') {
+        domainStats[domain].bounced++;
+      }
+    }
+
+    // Calculate rates and sort by total sent
+    const domainList = Object.entries(domainStats)
+      .map(([domain, stats]) => ({
+        domain,
+        sent: stats.sent,
+        bounced: stats.bounced,
+        bounceRate: stats.sent > 0 ? Math.round((stats.bounced / stats.sent) * 1000) / 10 : 0,
+        riskLevel: stats.sent >= 10
+          ? (stats.bounced / stats.sent) > 0.1 ? 'high' : (stats.bounced / stats.sent) > 0.05 ? 'medium' : 'low'
+          : 'unknown',
+      }))
+      .sort((a, b) => b.sent - a.sent)
+      .slice(0, limit);
+
+    // Calculate problematic domains (high bounce rate with significant volume)
+    const problematicDomains = domainList.filter(
+      d => d.riskLevel === 'high' && d.sent >= 10
+    );
+
+    return {
+      domains: domainList,
+      problematicDomains,
+      summary: {
+        totalDomains: Object.keys(domainStats).length,
+        problematicCount: problematicDomains.length,
+        avgBounceRate: domainList.length > 0
+          ? Math.round(domainList.reduce((sum, d) => sum + d.bounceRate, 0) / domainList.length * 10) / 10
+          : 0,
+      },
+    };
   }
 }

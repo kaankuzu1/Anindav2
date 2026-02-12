@@ -44,3 +44,21 @@ export { type CampaignSettings as CampaignSettingsInput } from './validation';
 
 // Export utilities
 export * from './utils';
+
+// Export tracking utilities
+export * from './tracking';
+
+// Export email verification
+export * from './email-verification';
+
+// Export DNS validation
+export * from './dns-validator';
+
+// Export lead state machine
+export * from './lead-state-machine';
+
+// Export send time optimization
+export * from './send-time-optimizer';
+
+// Export country-language mapping
+export * from './country-language';

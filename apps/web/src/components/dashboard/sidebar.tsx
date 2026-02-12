@@ -5,6 +5,7 @@ import Image from 'next/image';
 import { usePathname } from 'next/navigation';
 import { createClient } from '@/lib/supabase/client';
 import { useRouter } from 'next/navigation';
+import { useTeam } from '@/hooks/use-team';
 import type { User } from '@supabase/supabase-js';
 import {
   LayoutDashboard,
@@ -28,7 +29,7 @@ const navigation = [
   { name: 'Inboxes', href: '/inboxes', icon: Inbox },
   { name: 'Warm-up', href: '/warmup', icon: Flame },
   { name: 'Leads', href: '/leads', icon: Users },
-  { name: 'Replies', href: '/replies', icon: MessageSquare },
+  { name: 'Unibox', href: '/unibox', icon: Inbox },
   { name: 'Analytics', href: '/analytics', icon: BarChart3 },
   { name: 'Settings', href: '/settings', icon: Settings },
 ];
@@ -37,6 +38,7 @@ export function Sidebar({ user }: SidebarProps) {
   const pathname = usePathname();
   const router = useRouter();
   const supabase = createClient();
+  const { team } = useTeam();
 
   const handleLogout = async () => {
     await supabase.auth.signOut();
@@ -88,7 +90,10 @@ export function Sidebar({ user }: SidebarProps) {
               <p className="text-sm font-medium text-gray-900 dark:text-white truncate">
                 {user.email}
               </p>
-              <p className="text-xs text-gray-500 dark:text-[#6b7280]">Free Plan</p>
+              {team?.name && (
+                <p className="text-xs text-gray-500 dark:text-[#6b7280] truncate">{team.name}</p>
+              )}
+              <p className="text-xs text-gray-500 dark:text-[#6b7280]">{team?.plan || 'Free Plan'}</p>
             </div>
           </div>
           <button

@@ -58,6 +58,13 @@ export const campaignSettingsSchema = z.object({
   trackClicks: z.boolean().default(false),
   espMatching: z.boolean().default(true),
   minHealthScore: z.number().int().min(0).max(100).default(70),
+  schedule: z.record(
+    z.enum(['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun']),
+    z.array(z.object({
+      start: z.number().int().min(0).max(24),
+      end: z.number().int().min(0).max(24),
+    })).min(1).max(2)
+  ).optional(),
 });
 
 export const sequenceStepSchema = z.object({

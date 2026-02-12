@@ -8,13 +8,13 @@ import {
   Query,
   UseGuards,
 } from '@nestjs/common';
-import { AuthGuard } from '@nestjs/passport';
+import { SupabaseAuthGuard } from '../../shared/guards/supabase-auth.guard';
 import { RepliesService } from './replies.service';
 
 type IntentType = 'interested' | 'meeting_request' | 'question' | 'not_interested' | 'unsubscribe' | 'out_of_office' | 'auto_reply' | 'bounce' | 'neutral';
 
 @Controller('replies')
-@UseGuards(AuthGuard('jwt'))
+@UseGuards(SupabaseAuthGuard)
 export class RepliesController {
   constructor(private readonly repliesService: RepliesService) {}
 
@@ -58,6 +58,18 @@ export class RepliesController {
     @Query('team_id') teamId: string,
   ) {
     return this.repliesService.getThread(threadId, teamId);
+  }
+
+  @Get('sent')
+  async getAllSentReplies(
+    @Query('team_id') teamId: string,
+    @Query('limit') limit?: string,
+    @Query('offset') offset?: string,
+  ) {
+    return this.repliesService.getAllSentReplies(teamId, {
+      limit: limit ? parseInt(limit, 10) : 50,
+      offset: offset ? parseInt(offset, 10) : 0,
+    });
   }
 
   @Get(':id')
@@ -123,5 +135,35 @@ export class RepliesController {
     @Body() body: { reply_ids: string[] },
   ) {
     return this.repliesService.bulkArchive(body.reply_ids, teamId);
+  }
+
+  @Post(':id/send')
+  async sendReply(
+    @Param('id') replyId: string,
+    @Query('team_id') teamId: string,
+    @Body() body: { content: string; inboxId: string; subject?: string },
+  ) {
+    const result = await this.repliesService.sendReply(
+      replyId,
+      teamId,
+      body.content,
+      body.inboxId,
+      body.subject,
+    );
+
+    return {
+      success: true,
+      messageId: result.messageId,
+      threadId: result.threadId,
+      sentAt: result.sentAt.toISOString(),
+    };
+  }
+
+  @Get(':id/sent')
+  async getSentReplies(
+    @Param('id') replyId: string,
+    @Query('team_id') teamId: string,
+  ) {
+    return this.repliesService.getSentReplies(replyId, teamId);
   }
 }

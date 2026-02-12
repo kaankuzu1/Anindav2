@@ -18,6 +18,7 @@ export interface SendEmailOptions {
   inReplyTo?: string;
   references?: string;
   headers?: Record<string, string>;
+  threadId?: string;
 }
 
 export interface EmailMessage {
@@ -87,12 +88,15 @@ export class GmailClient {
     const message = this.createMimeMessage(options);
     const encodedMessage = Buffer.from(message).toString('base64url');
 
+    const requestBody: gmail_v1.Schema$Message = {
+      raw: encodedMessage,
+    };
+    if (options.threadId) {
+      requestBody.threadId = options.threadId;
+    }
     const response = await this.gmail.users.messages.send({
       userId: 'me',
-      requestBody: {
-        raw: encodedMessage,
-        threadId: options.inReplyTo ? undefined : undefined, // Thread is auto-detected from In-Reply-To
-      },
+      requestBody,
     });
 
     if (!response.data.id || !response.data.threadId) {

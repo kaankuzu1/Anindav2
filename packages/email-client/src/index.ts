@@ -43,6 +43,7 @@ export type SendEmailOptions = {
   inReplyTo?: string;
   references?: string;
   headers?: Record<string, string>;
+  threadId?: string;
 };
 
 // Common email message type
