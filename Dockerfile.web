@@ -4,6 +4,15 @@ RUN corepack enable && corepack prepare pnpm@8.15.0 --activate
 
 WORKDIR /app
 
+# Declare NEXT_PUBLIC_* as build args so they're inlined during next build
+ARG NEXT_PUBLIC_SUPABASE_URL
+ARG NEXT_PUBLIC_SUPABASE_ANON_KEY
+ARG NEXT_PUBLIC_API_URL
+
+ENV NEXT_PUBLIC_SUPABASE_URL=$NEXT_PUBLIC_SUPABASE_URL
+ENV NEXT_PUBLIC_SUPABASE_ANON_KEY=$NEXT_PUBLIC_SUPABASE_ANON_KEY
+ENV NEXT_PUBLIC_API_URL=$NEXT_PUBLIC_API_URL
+
 COPY . .
 
 RUN pnpm install --frozen-lockfile
