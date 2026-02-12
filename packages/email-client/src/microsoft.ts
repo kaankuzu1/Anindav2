@@ -16,6 +16,9 @@ export interface SendEmailOptions {
   textBody?: string;
   replyTo?: string;
   inReplyTo?: string;
+  references?: string;
+  headers?: Record<string, string>;
+  useReplyEndpoint?: boolean;
 }
 
 export interface EmailMessage {
@@ -36,21 +39,92 @@ export interface EmailMessage {
 export class MicrosoftClient {
   private client: Client;
   private credentials: MicrosoftCredentials;
+  private clientId?: string;
+  private clientSecret?: string;
+  private onTokenRefresh?: (newCredentials: MicrosoftCredentials) => Promise<void>;
 
-  constructor(credentials: MicrosoftCredentials) {
+  constructor(
+    credentials: MicrosoftCredentials,
+    options?: {
+      clientId?: string;
+      clientSecret?: string;
+      onTokenRefresh?: (newCredentials: MicrosoftCredentials) => Promise<void>;
+    }
+  ) {
     this.credentials = credentials;
-    this.client = Client.init({
+    this.clientId = options?.clientId;
+    this.clientSecret = options?.clientSecret;
+    this.onTokenRefresh = options?.onTokenRefresh;
+    this.client = this.createClient(credentials.accessToken);
+  }
+
+  private createClient(accessToken: string): Client {
+    return Client.init({
       authProvider: (done) => {
-        done(null, credentials.accessToken);
+        done(null, accessToken);
       },
     });
+  }
+
+  /**
+   * Check if the token is expired or about to expire (within 5 minutes)
+   */
+  isTokenExpired(): boolean {
+    if (!this.credentials.expiresAt) {
+      // No expiration set, assume it might be expired (conservative approach)
+      return false;
+    }
+    const bufferMs = 5 * 60 * 1000; // 5 minutes buffer
+    return new Date(this.credentials.expiresAt).getTime() - bufferMs < Date.now();
+  }
+
+  /**
+   * Refresh the access token if expired
+   * Returns the new credentials if refreshed, or null if not needed/possible
+   */
+  async ensureValidToken(): Promise<MicrosoftCredentials | null> {
+    if (!this.isTokenExpired()) {
+      return null; // Token is still valid
+    }
+
+    if (!this.clientId || !this.clientSecret) {
+      throw new Error('Cannot refresh token: clientId and clientSecret are required');
+    }
+
+    const newCredentials = await refreshMicrosoftToken(
+      this.credentials.refreshToken,
+      this.clientId,
+      this.clientSecret
+    );
+
+    // Update internal state
+    this.credentials = newCredentials;
+    this.client = this.createClient(newCredentials.accessToken);
+
+    // Notify callback if provided (to persist new tokens)
+    if (this.onTokenRefresh) {
+      await this.onTokenRefresh(newCredentials);
+    }
+
+    return newCredentials;
   }
 
   /**
    * Send an email
    */
   async sendEmail(options: SendEmailOptions): Promise<{ messageId: string; conversationId: string }> {
-    const message = {
+    // Ensure token is valid before sending
+    await this.ensureValidToken();
+
+    // Build internet message headers for custom headers (like List-Unsubscribe)
+    const internetMessageHeaders: Array<{ name: string; value: string }> = [];
+    if (options.headers) {
+      for (const [name, value] of Object.entries(options.headers)) {
+        internetMessageHeaders.push({ name, value });
+      }
+    }
+
+    const message: Record<string, unknown> = {
       subject: options.subject,
       body: {
         contentType: 'HTML',
@@ -71,8 +145,13 @@ export class MicrosoftClient {
       },
     };
 
-    // If replying, use the reply endpoint
-    if (options.inReplyTo) {
+    // Add custom headers if provided
+    if (internetMessageHeaders.length > 0) {
+      message.internetMessageHeaders = internetMessageHeaders;
+    }
+
+    // Use /reply endpoint only when explicitly requested (inbox replies)
+    if (options.inReplyTo && options.useReplyEndpoint) {
       const response = await this.client
         .api(`/me/messages/${options.inReplyTo}/reply`)
         .post({
@@ -86,15 +165,26 @@ export class MicrosoftClient {
       };
     }
 
-    // Otherwise send new message
-    const response = await this.client.api('/me/sendMail').post({
-      message,
-      saveToSentItems: true,
-    });
+    // Add threading headers for campaign follow-ups
+    if (options.inReplyTo) {
+      internetMessageHeaders.push({ name: 'In-Reply-To', value: options.inReplyTo });
+    }
+    if (options.references) {
+      internetMessageHeaders.push({ name: 'References', value: options.references });
+    }
+
+    // Re-apply headers if new ones were added
+    if (internetMessageHeaders.length > 0) {
+      message.internetMessageHeaders = internetMessageHeaders;
+    }
+
+    // Use draft+send to get message IDs back (sendMail returns 202 with no body)
+    const draft = await this.client.api('/me/messages').post(message);
+    await this.client.api(`/me/messages/${draft.id}/send`).post({});
 
     return {
-      messageId: response?.id ?? '',
-      conversationId: response?.conversationId ?? '',
+      messageId: draft.id ?? '',
+      conversationId: draft.conversationId ?? '',
     };
   }
 
@@ -102,6 +192,9 @@ export class MicrosoftClient {
    * Get messages since a specific date
    */
   async getMessages(since?: Date, maxResults = 50): Promise<EmailMessage[]> {
+    // Ensure token is valid before fetching
+    await this.ensureValidToken();
+
     let query = this.client
       .api('/me/mailFolders/inbox/messages')
       .top(maxResults)

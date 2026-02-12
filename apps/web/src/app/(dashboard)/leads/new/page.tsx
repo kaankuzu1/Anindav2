@@ -4,6 +4,7 @@ import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { createClient } from '@/lib/supabase/client';
+import { useTeam } from '@/hooks/use-team';
 import { ArrowLeft, UserPlus, Save } from 'lucide-react';
 
 interface LeadList {
@@ -14,10 +15,10 @@ interface LeadList {
 export default function NewLeadPage() {
   const router = useRouter();
   const supabase = createClient();
+  const { teamId, loading: teamLoading } = useTeam();
 
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
-  const [teamId, setTeamId] = useState<string | null>(null);
   const [leadLists, setLeadLists] = useState<LeadList[]>([]);
   const [error, setError] = useState<string | null>(null);
 
@@ -31,39 +32,28 @@ export default function NewLeadPage() {
   const [linkedinUrl, setLinkedinUrl] = useState('');
   const [website, setWebsite] = useState('');
   const [selectedListId, setSelectedListId] = useState('');
+  const [analysisNotes, setAnalysisNotes] = useState('');
 
   useEffect(() => {
+    if (teamLoading) return;
+    if (!teamId) {
+      setLoading(false);
+      return;
+    }
+
     async function fetchData() {
-      const { data: { user } } = await supabase.auth.getUser();
-      if (!user) {
-        router.push('/login');
-        return;
-      }
+      const { data: lists } = await supabase
+        .from('lead_lists')
+        .select('id, name')
+        .eq('team_id', teamId!)
+        .order('created_at', { ascending: false });
 
-      const { data: teamMembers } = await supabase
-        .from('team_members')
-        .select('team_id')
-        .eq('user_id', user.id)
-        .limit(1) as { data: { team_id: string }[] | null };
-
-      if (teamMembers && teamMembers.length > 0) {
-        const tid = teamMembers[0].team_id;
-        setTeamId(tid);
-
-        const { data: lists } = await supabase
-          .from('lead_lists')
-          .select('id, name')
-          .eq('team_id', tid)
-          .order('created_at', { ascending: false });
-
-        setLeadLists(lists ?? []);
-      }
-
+      setLeadLists(lists ?? []);
       setLoading(false);
     }
 
     fetchData();
-  }, [supabase, router]);
+  }, [teamId, teamLoading]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -107,6 +97,7 @@ export default function NewLeadPage() {
           lead_list_id: selectedListId || null,
           status: 'pending',
           custom_fields: {},
+          analysis_notes: analysisNotes || null,
         })
         .select()
         .single();
@@ -135,7 +126,7 @@ export default function NewLeadPage() {
     }
   };
 
-  if (loading) {
+  if (teamLoading || loading) {
     return (
       <div className="flex items-center justify-center min-h-[400px]">
         <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary"></div>
@@ -276,6 +267,20 @@ export default function NewLeadPage() {
               onChange={(e) => setWebsite(e.target.value)}
               placeholder="https://company.com"
               className="w-full px-4 py-2 border border-border rounded-lg bg-card text-foreground focus:ring-2 focus:ring-primary/20 focus:border-primary"
+            />
+          </div>
+
+          {/* Analysis Notes */}
+          <div>
+            <label className="block text-sm font-medium text-foreground mb-1">
+              Analysis Notes
+            </label>
+            <textarea
+              value={analysisNotes}
+              onChange={(e) => setAnalysisNotes(e.target.value)}
+              placeholder="Add research notes about this lead for AI personalization..."
+              rows={3}
+              className="w-full px-4 py-2 border border-border rounded-lg bg-card text-foreground focus:ring-2 focus:ring-primary/20 focus:border-primary resize-y"
             />
           </div>
 

@@ -1,6 +1,7 @@
-import { Injectable, Inject, NotFoundException } from '@nestjs/common';
+import { Injectable, Inject, NotFoundException, BadRequestException, Logger } from '@nestjs/common';
 import { SupabaseClient } from '@supabase/supabase-js';
 import { SUPABASE_CLIENT } from '../../shared/database/database.module';
+import { WarmupAssignmentService } from './warmup-assignment.service';
 
 interface UpdateWarmupSettingsInput {
   enabled?: boolean;
@@ -11,9 +12,12 @@ interface UpdateWarmupSettingsInput {
 
 @Injectable()
 export class WarmupService {
+  private readonly logger = new Logger(WarmupService.name);
+
   constructor(
     @Inject(SUPABASE_CLIENT)
     private readonly supabase: SupabaseClient,
+    private readonly assignmentService: WarmupAssignmentService,
   ) {}
 
   async getWarmupState(inboxId: string, teamId: string) {
@@ -47,6 +51,7 @@ export class WarmupService {
           ramp_speed: 'normal',
           target_daily_volume: 50,
           reply_rate_target: 30,
+          warmup_mode: 'pool',
         })
         .select()
         .single();
@@ -76,8 +81,29 @@ export class WarmupService {
     return data;
   }
 
-  async enableWarmup(inboxId: string, teamId: string) {
+  async enableWarmup(inboxId: string, teamId: string, mode?: 'pool' | 'network') {
     const existingState = await this.getWarmupState(inboxId, teamId);
+    const warmupMode = mode ?? existingState.warmup_mode ?? 'pool';
+
+    if (warmupMode === 'pool') {
+      // Pool mode: require at least 2 inboxes
+      const { data: teamInboxes, error: inboxError } = await this.supabase
+        .from('inboxes')
+        .select('id')
+        .eq('team_id', teamId)
+        .in('status', ['active', 'warming_up']);
+
+      if (inboxError) throw inboxError;
+
+      if (!teamInboxes || teamInboxes.length < 2) {
+        throw new BadRequestException(
+          'Pool warmup requires at least 2 inboxes in your team. Add another inbox or use Network mode for single-inbox warmup.'
+        );
+      }
+    } else if (warmupMode === 'network') {
+      // Network mode: assign an admin inbox
+      await this.assignmentService.assignAdminInbox(inboxId);
+    }
 
     // Preserve current_day when resuming from pause, only reset to 1 if fresh start (day 0)
     const currentDay = existingState?.current_day ?? 0;
@@ -89,6 +115,7 @@ export class WarmupService {
         phase: 'ramping',
         started_at: new Date().toISOString(),
         current_day: currentDay > 0 ? currentDay : 1,
+        warmup_mode: warmupMode,
       })
       .eq('inbox_id', inboxId)
       .select()
@@ -106,7 +133,12 @@ export class WarmupService {
   }
 
   async disableWarmup(inboxId: string, teamId: string) {
-    await this.getWarmupState(inboxId, teamId);
+    const state = await this.getWarmupState(inboxId, teamId);
+
+    // If network mode, release admin inbox assignment
+    if (state.warmup_mode === 'network') {
+      await this.assignmentService.releaseAdminInbox(inboxId);
+    }
 
     const { data, error } = await this.supabase
       .from('warmup_state')
@@ -127,6 +159,36 @@ export class WarmupService {
       .eq('id', inboxId);
 
     return data;
+  }
+
+  async switchWarmupMode(inboxId: string, teamId: string, newMode: 'pool' | 'network' | null) {
+    const state = await this.getWarmupState(inboxId, teamId);
+
+    if (state.warmup_mode === newMode) {
+      return state;
+    }
+
+    // If warmup is enabled, disable it first (releases assignments if network)
+    if (state.enabled) {
+      await this.disableWarmup(inboxId, teamId);
+    }
+
+    // Update mode column
+    const { data, error } = await this.supabase
+      .from('warmup_state')
+      .update({ warmup_mode: newMode })
+      .eq('inbox_id', inboxId)
+      .select()
+      .single();
+
+    if (error) throw error;
+    return data;
+  }
+
+  async getAssignments(inboxId: string, teamId: string) {
+    // Verify inbox belongs to team
+    await this.getWarmupState(inboxId, teamId);
+    return this.assignmentService.getAssignedAdminInboxes(inboxId);
   }
 
   async updateWarmupSettings(inboxId: string, teamId: string, input: UpdateWarmupSettingsInput) {
@@ -273,7 +335,12 @@ export class WarmupService {
   }
 
   async resetWarmup(inboxId: string, teamId: string) {
-    await this.getWarmupState(inboxId, teamId);
+    const state = await this.getWarmupState(inboxId, teamId);
+
+    // Release admin inbox if network mode
+    if (state.warmup_mode === 'network') {
+      await this.assignmentService.releaseAdminInbox(inboxId);
+    }
 
     const { data, error } = await this.supabase
       .from('warmup_state')

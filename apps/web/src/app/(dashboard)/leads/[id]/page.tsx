@@ -4,6 +4,7 @@ import { useState, useEffect } from 'react';
 import { useRouter, useParams } from 'next/navigation';
 import Link from 'next/link';
 import { createClient } from '@/lib/supabase/client';
+import { useTeam } from '@/hooks/use-team';
 import {
   ArrowLeft,
   Save,
@@ -17,7 +18,21 @@ import {
   Calendar,
   Clock,
   MessageSquare,
+  ShieldCheck,
+  CheckCircle,
+  XCircle,
+  AlertTriangle,
+  HelpCircle,
+  RefreshCw,
 } from 'lucide-react';
+import {
+  getLeadStatusColor,
+  getVerificationBadgeColor,
+  getVerificationIcon,
+  formatLeadStatus,
+  getRiskScoreColor,
+  getRiskLevel,
+} from '@/lib/lead-status';
 
 interface Lead {
   id: string;
@@ -37,6 +52,10 @@ interface Lead {
   last_contacted_at: string | null;
   replied_at: string | null;
   lead_lists?: { id: string; name: string } | null;
+  email_verification_status: string | null;
+  email_risk_score: number | null;
+  email_verified_at: string | null;
+  analysis_notes: string | null;
 }
 
 interface LeadList {
@@ -58,15 +77,17 @@ export default function LeadDetailPage() {
   const leadId = params.id as string;
   const supabase = createClient();
 
+  const { teamId, loading: teamLoading } = useTeam();
+
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [deleting, setDeleting] = useState(false);
-  const [teamId, setTeamId] = useState<string | null>(null);
   const [lead, setLead] = useState<Lead | null>(null);
   const [leadLists, setLeadLists] = useState<LeadList[]>([]);
   const [emailActivity, setEmailActivity] = useState<EmailActivity[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
+  const [verifying, setVerifying] = useState(false);
 
   // Editable fields
   const [email, setEmail] = useState('');
@@ -79,35 +100,18 @@ export default function LeadDetailPage() {
   const [website, setWebsite] = useState('');
   const [selectedListId, setSelectedListId] = useState('');
   const [status, setStatus] = useState('pending');
+  const [analysisNotes, setAnalysisNotes] = useState('');
 
   useEffect(() => {
+    if (teamLoading || !teamId) return;
+
     async function fetchData() {
-      const { data: { user } } = await supabase.auth.getUser();
-      if (!user) {
-        router.push('/login');
-        return;
-      }
-
-      const { data: teamMembers } = await supabase
-        .from('team_members')
-        .select('team_id')
-        .eq('user_id', user.id)
-        .limit(1) as { data: { team_id: string }[] | null };
-
-      if (!teamMembers || teamMembers.length === 0) {
-        setLoading(false);
-        return;
-      }
-
-      const tid = teamMembers[0].team_id;
-      setTeamId(tid);
-
       // Fetch lead
       const { data: leadData, error: leadError } = await supabase
         .from('leads')
         .select('*, lead_lists(id, name)')
         .eq('id', leadId)
-        .eq('team_id', tid)
+        .eq('team_id', teamId!)
         .single();
 
       if (leadError || !leadData) {
@@ -127,12 +131,13 @@ export default function LeadDetailPage() {
       setWebsite(lead.website || '');
       setSelectedListId(lead.lead_list_id || '');
       setStatus(lead.status || 'pending');
+      setAnalysisNotes(lead.analysis_notes || '');
 
       // Fetch lead lists
       const { data: lists } = await supabase
         .from('lead_lists')
         .select('id, name')
-        .eq('team_id', tid)
+        .eq('team_id', teamId!)
         .order('created_at', { ascending: false });
 
       setLeadLists(lists ?? []);
@@ -151,7 +156,7 @@ export default function LeadDetailPage() {
     }
 
     fetchData();
-  }, [supabase, router, leadId]);
+  }, [teamId, teamLoading, leadId]);
 
   const handleSave = async () => {
     if (!teamId || !lead) return;
@@ -199,6 +204,7 @@ export default function LeadDetailPage() {
           website: website || null,
           lead_list_id: newListId,
           status,
+          analysis_notes: analysisNotes || null,
         })
         .eq('id', leadId);
 
@@ -287,28 +293,57 @@ export default function LeadDetailPage() {
     }
   };
 
-  const getStatusColor = (status: string) => {
-    switch (status) {
-      case 'pending':
-        return 'bg-gray-100 text-gray-800';
-      case 'in_sequence':
-        return 'bg-blue-100 text-blue-800';
-      case 'contacted':
-        return 'bg-indigo-100 text-indigo-800';
-      case 'replied':
-        return 'bg-green-100 text-green-800';
-      case 'interested':
-        return 'bg-emerald-100 text-emerald-800';
-      case 'meeting_booked':
-        return 'bg-purple-100 text-purple-800';
-      case 'not_interested':
-        return 'bg-red-100 text-red-800';
-      case 'bounced':
-        return 'bg-orange-100 text-orange-800';
-      case 'unsubscribed':
-        return 'bg-yellow-100 text-yellow-800';
+  const handleVerifyEmail = async () => {
+    if (!teamId || !lead) return;
+
+    setVerifying(true);
+    setError(null);
+    setSuccessMessage(null);
+
+    try {
+      const response = await fetch(
+        `${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001'}/leads/${lead.id}/verify?team_id=${teamId}`,
+        { method: 'POST' }
+      );
+
+      if (!response.ok) {
+        throw new Error('Failed to verify email');
+      }
+
+      const result = await response.json();
+
+      // Update local state with verification result
+      setLead({
+        ...lead,
+        email_verification_status: result.verification.status,
+        email_risk_score: result.verification.riskScore,
+        email_verified_at: new Date().toISOString(),
+      });
+
+      setSuccessMessage(`Email verified: ${result.verification.status}${result.verification.riskScore ? ` (Risk: ${result.verification.riskScore})` : ''}`);
+    } catch (err) {
+      console.error('Failed to verify email:', err);
+      setError('Failed to verify email. Please try again.');
+    } finally {
+      setVerifying(false);
+    }
+  };
+
+  // Helper to render verification icon
+  const VerificationIcon = ({ status, size = 'w-4 h-4' }: { status: string | null; size?: string }) => {
+    const icon = getVerificationIcon(status);
+
+    switch (icon) {
+      case 'check':
+        return <CheckCircle className={`${size} text-green-600 dark:text-green-400`} />;
+      case 'x':
+        return <XCircle className={`${size} text-red-600 dark:text-red-400`} />;
+      case 'alert':
+        return <AlertTriangle className={`${size} text-yellow-600 dark:text-yellow-400`} />;
+      case 'spinner':
+        return <div className={`${size} border-2 border-blue-600 border-t-transparent rounded-full animate-spin`} />;
       default:
-        return 'bg-gray-100 text-gray-800';
+        return <HelpCircle className={`${size} text-gray-400`} />;
     }
   };
 
@@ -331,7 +366,7 @@ export default function LeadDetailPage() {
     }
   };
 
-  if (loading) {
+  if (loading || teamLoading) {
     return (
       <div className="flex items-center justify-center min-h-[400px]">
         <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary"></div>
@@ -374,8 +409,8 @@ export default function LeadDetailPage() {
                 </h1>
                 <p className="text-gray-500">{lead.email}</p>
               </div>
-              <span className={`px-3 py-1 rounded-full text-sm font-medium ${getStatusColor(status)}`}>
-                {status.replace(/_/g, ' ')}
+              <span className={`px-3 py-1 rounded-full text-sm font-medium ${getLeadStatusColor(status)}`}>
+                {formatLeadStatus(status)}
               </span>
             </div>
 
@@ -502,6 +537,20 @@ export default function LeadDetailPage() {
                 </div>
               </div>
 
+              {/* Analysis Notes */}
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">
+                  Analysis Notes
+                </label>
+                <textarea
+                  value={analysisNotes}
+                  onChange={(e) => setAnalysisNotes(e.target.value)}
+                  placeholder="Add research notes about this lead for AI personalization..."
+                  rows={3}
+                  className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary/20 focus:border-primary resize-y"
+                />
+              </div>
+
               {/* Status & List */}
               <div className="grid grid-cols-2 gap-4">
                 <div>
@@ -577,6 +626,58 @@ export default function LeadDetailPage() {
 
         {/* Sidebar */}
         <div className="space-y-6">
+          {/* Email Verification */}
+          <div className="bg-white rounded-xl border border-gray-200 p-6">
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="font-semibold text-gray-900 flex items-center gap-2">
+                <ShieldCheck className="w-4 h-4" />
+                Email Verification
+              </h3>
+              <button
+                onClick={handleVerifyEmail}
+                disabled={verifying}
+                className="text-sm text-primary hover:text-primary/80 disabled:opacity-50 flex items-center gap-1"
+              >
+                {verifying ? (
+                  <>
+                    <RefreshCw className="w-3 h-3 animate-spin" />
+                    Verifying...
+                  </>
+                ) : (
+                  <>
+                    <RefreshCw className="w-3 h-3" />
+                    Verify
+                  </>
+                )}
+              </button>
+            </div>
+            <div className="space-y-3">
+              <div className="flex items-center justify-between">
+                <span className="text-sm text-gray-500">Status</span>
+                <span className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-xs font-medium ${getVerificationBadgeColor(lead.email_verification_status)}`}>
+                  <VerificationIcon status={lead.email_verification_status} size="w-3 h-3" />
+                  {lead.email_verification_status ? lead.email_verification_status.replace('_', ' ') : 'Unverified'}
+                </span>
+              </div>
+              {lead.email_risk_score !== null && (
+                <div className="flex items-center justify-between">
+                  <span className="text-sm text-gray-500">Risk Score</span>
+                  <span className={`text-sm font-medium ${getRiskScoreColor(lead.email_risk_score)}`}>
+                    {lead.email_risk_score}/100 ({getRiskLevel(lead.email_risk_score)})
+                  </span>
+                </div>
+              )}
+              {lead.email_verified_at && (
+                <div className="flex items-center justify-between">
+                  <span className="text-sm text-gray-500">Verified</span>
+                  <span className="text-sm text-gray-700">
+                    {new Date(lead.email_verified_at).toLocaleDateString()}
+                  </span>
+                </div>
+              )}
+            </div>
+          </div>
+
           {/* Timeline */}
           <div className="bg-white rounded-xl border border-gray-200 p-6">
             <h3 className="font-semibold text-gray-900 mb-4">Timeline</h3>

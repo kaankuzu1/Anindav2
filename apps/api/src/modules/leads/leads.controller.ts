@@ -14,7 +14,7 @@ import {
   MaxFileSizeValidator,
   FileTypeValidator,
 } from '@nestjs/common';
-import { AuthGuard } from '@nestjs/passport';
+import { SupabaseAuthGuard } from '../../shared/guards/supabase-auth.guard';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { LeadsService, CreateLeadInput } from './leads.service';
 
@@ -29,7 +29,7 @@ interface MulterFile {
 }
 
 @Controller('leads')
-@UseGuards(AuthGuard('jwt'))
+@UseGuards(SupabaseAuthGuard)
 export class LeadsController {
   constructor(private readonly leadsService: LeadsService) {}
 
@@ -157,6 +157,18 @@ export class LeadsController {
     return this.leadsService.deleteLead(leadId, teamId);
   }
 
+  /**
+   * Verify a lead's email address
+   * POST /leads/:id/verify
+   */
+  @Post(':id/verify')
+  async verifyLeadEmail(
+    @Param('id') leadId: string,
+    @Query('team_id') teamId: string,
+  ) {
+    return this.leadsService.verifyLeadEmail(leadId, teamId);
+  }
+
   @Post('bulk-delete')
   async bulkDeleteLeads(
     @Query('team_id') teamId: string,
@@ -263,5 +275,29 @@ export class LeadsController {
     @Query('team_id') teamId: string,
   ) {
     return this.leadsService.removeFromSuppressionList(teamId, email);
+  }
+
+  // ============================================
+  // GDPR Compliance Endpoints
+  // ============================================
+
+  /**
+   * GDPR Right to Erasure (Article 17)
+   * Deletes all personal data for an email address across all teams
+   * POST /leads/gdpr/delete
+   */
+  @Post('gdpr/delete')
+  async gdprDelete(@Body() body: { email: string }) {
+    return this.leadsService.gdprDeleteByEmail(body.email);
+  }
+
+  /**
+   * GDPR Data Portability (Article 20)
+   * Exports all personal data for an email address
+   * GET /leads/gdpr/export?email=xxx
+   */
+  @Get('gdpr/export')
+  async gdprExport(@Query('email') email: string) {
+    return this.leadsService.gdprExportByEmail(email);
   }
 }

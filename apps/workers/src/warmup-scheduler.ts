@@ -6,6 +6,7 @@ import { calculateWarmupQuota, calculateHealthScore, randomDelay } from '@aninda
 interface WarmupSendJob {
   fromInboxId: string;
   toInboxId: string;
+  isNetworkWarmup?: boolean;
 }
 
 // Work hours for spreading emails (9 AM - 6 PM = 9 hours)
@@ -16,6 +17,9 @@ interface WarmupInbox {
   team_id: string;
   email: string;
   health_score: number;
+  status: string;
+  bounce_rate_7d?: number;
+  reply_rate_7d?: number;
 }
 
 interface WarmupState {
@@ -32,6 +36,7 @@ interface WarmupState {
   received_total: number;
   replied_total: number;
   started_at: string | null;
+  warmup_mode: string;
 }
 
 const LAST_RESET_KEY = 'warmup:last_reset_date';
@@ -104,7 +109,7 @@ export class WarmupScheduler {
         .from('warmup_state')
         .select(`
           *,
-          inbox:inboxes(id, team_id, email, health_score, status)
+          inbox:inboxes(id, team_id, email, health_score, status, bounce_rate_7d, reply_rate_7d)
         `)
         .eq('enabled', true);
 
@@ -139,119 +144,285 @@ export class WarmupScheduler {
 
       console.log(`Scheduler: Grouped into ${teamInboxes.size} teams`);
 
-      // For each team, schedule warmups between inboxes
+      // Get today's date for job deduplication
+      const today = new Date().toISOString().split('T')[0];
+
+      // For each team, schedule warmups
       for (const [teamId, inboxStates] of teamInboxes) {
-        console.log(`Scheduler: Team ${teamId} has ${inboxStates.length} warmup-enabled inboxes`);
+        // Separate pool and network inboxes, filter out disconnected ones
+        const poolInboxes = inboxStates.filter(
+          is => is.state.warmup_mode !== 'network' && (is.inbox.status === 'active' || is.inbox.status === 'warming_up')
+        );
+        const networkInboxes = inboxStates.filter(
+          is => is.state.warmup_mode === 'network' && (is.inbox.status === 'active' || is.inbox.status === 'warming_up')
+        );
 
-        // Need at least 2 inboxes with warmup enabled in the team
-        if (inboxStates.length < 2) {
-          console.log(`Scheduler: Team ${teamId} needs at least 2 inboxes with warmup enabled`);
-          continue;
+        // Log disconnected inboxes
+        const disconnectedInboxes = inboxStates.filter(
+          is => is.inbox.status !== 'active' && is.inbox.status !== 'warming_up'
+        );
+        for (const { inbox } of disconnectedInboxes) {
+          console.log(`Scheduler: Skipping disconnected inbox ${inbox.email} (status: ${inbox.status})`);
         }
 
-        // Get all team inboxes as potential targets (both active and warming_up)
-        const { data: allTeamInboxes, error: inboxError } = await this.supabase
-          .from('inboxes')
-          .select('id, email, status')
-          .eq('team_id', teamId)
-          .in('status', ['active', 'warming_up']);
+        // --- Pool mode scheduling ---
+        if (poolInboxes.length > 0) {
+          if (poolInboxes.length < 2) {
+            // Not enough connected pool inboxes - disable ALL pool warmup for this team
+            console.log(`Scheduler: Team ${teamId} has only ${poolInboxes.length} connected pool inbox(es). Disabling pool warmup for all.`);
 
-        if (inboxError) {
-          console.error('Failed to fetch team inboxes:', inboxError);
-          continue;
-        }
-
-        if (!allTeamInboxes || allTeamInboxes.length < 2) {
-          console.log(`Scheduler: Team ${teamId} has less than 2 inboxes total`);
-          continue;
-        }
-
-        console.log(`Scheduler: Team ${teamId} has ${allTeamInboxes.length} total inboxes`);
-
-        // Get today's date for job deduplication
-        const today = new Date().toISOString().split('T')[0];
-
-        for (const { inbox, state } of inboxStates) {
-          // Calculate quota for this inbox
-          const quota = calculateWarmupQuota(state.current_day, state.ramp_speed);
-
-          // Get pending jobs already in queue for this inbox
-          const pendingInQueue = await this.getPendingJobCount(inbox.id);
-
-          // Calculate remaining emails needed (quota - already sent - pending in queue)
-          const remaining = Math.max(0, quota - state.sent_today - pendingInQueue);
-
-          console.log(`Scheduler: ${inbox.email} - Day ${state.current_day}, Quota: ${quota}, Sent: ${state.sent_today}, Pending: ${pendingInQueue}, Remaining: ${remaining}`);
-
-          if (remaining <= 0) {
-            console.log(`Scheduler: ${inbox.email} already met daily quota or has enough pending jobs`);
-            continue;
-          }
-
-          // Calculate interval to spread emails across work hours
-          const intervalMs = Math.floor(WORK_HOURS_MS / Math.max(remaining, 1));
-
-          for (let i = 0; i < remaining; i++) {
-            // Pick a random target inbox (not self)
-            const targets = allTeamInboxes.filter(t => t.id !== inbox.id);
-            if (targets.length === 0) {
-              console.log(`Scheduler: No targets available for ${inbox.email}`);
-              continue;
+            for (const { inbox, state } of poolInboxes) {
+              await this.disablePoolWarmup(inbox.id, inbox.email);
             }
-
-            const targetInbox = targets[Math.floor(Math.random() * targets.length)];
-
-            // Calculate delay to spread across work hours with some jitter
-            const baseDelay = i * intervalMs;
-            const jitter = randomDelay(0, Math.min(intervalMs * 0.2, 60000)); // Up to 20% jitter or 1 minute
-            const delay = baseDelay + jitter;
-
-            // Use unique job ID to prevent duplicates
-            const jobId = `warmup-${inbox.id}-${today}-${i}`;
-
-            try {
-              await this.warmupQueue.add(
-                'warmup-send',
-                {
-                  fromInboxId: inbox.id,
-                  toInboxId: targetInbox.id,
-                },
-                {
-                  delay,
-                  jobId, // Unique ID prevents duplicate jobs
-                  removeOnComplete: 100,
-                  removeOnFail: 50,
-                }
-              );
-
-              console.log(`Scheduled warmup: ${inbox.email} -> ${targetInbox.email} (delay: ${Math.round(delay / 60000)}min, jobId: ${jobId})`);
-            } catch (error: any) {
-              // Job with this ID already exists - skip silently
-              if (error.message?.includes('Job already exists')) {
-                console.log(`Scheduler: Job ${jobId} already exists, skipping`);
-              } else {
-                console.error(`Scheduler: Failed to add job ${jobId}:`, error.message);
-              }
+            // Also disable any disconnected pool inboxes that still have warmup enabled
+            for (const { inbox } of disconnectedInboxes.filter(is => is.state.warmup_mode !== 'network')) {
+              await this.disablePoolWarmup(inbox.id, inbox.email);
             }
+          } else {
+            // Schedule pool warmup jobs
+            await this.schedulePoolWarmups(teamId, poolInboxes, today);
           }
+        }
 
-          // Update health score
-          const healthScore = calculateHealthScore({
-            warmupEnabled: state.enabled,
-            currentDay: state.current_day,
-            sentTotal: state.sent_total,
-            repliedTotal: state.replied_total,
-          });
-
-          await this.supabase
-            .from('inboxes')
-            .update({ health_score: healthScore })
-            .eq('id', inbox.id);
+        // --- Network mode scheduling ---
+        for (const { inbox, state } of networkInboxes) {
+          await this.scheduleNetworkWarmups(inbox, state, today);
         }
       }
     } catch (error) {
       console.error('Warmup scheduler error:', error);
     }
+  }
+
+  private async disablePoolWarmup(inboxId: string, email: string): Promise<void> {
+    await this.supabase
+      .from('warmup_state')
+      .update({ enabled: false, phase: 'paused' })
+      .eq('inbox_id', inboxId);
+
+    console.log(`Scheduler: Disabled pool warmup for ${email} (insufficient connected pool inboxes)`);
+  }
+
+  private async schedulePoolWarmups(
+    teamId: string,
+    poolInboxes: Array<{ inbox: WarmupInbox; state: WarmupState }>,
+    today: string,
+  ) {
+    console.log(`Scheduler: Team ${teamId} has ${poolInboxes.length} connected pool inboxes`);
+
+    // Get all team inboxes as potential targets (both active and warming_up)
+    const { data: allTeamInboxes, error: inboxError } = await this.supabase
+      .from('inboxes')
+      .select('id, email, status')
+      .eq('team_id', teamId)
+      .in('status', ['active', 'warming_up']);
+
+    if (inboxError) {
+      console.error('Failed to fetch team inboxes:', inboxError);
+      return;
+    }
+
+    if (!allTeamInboxes || allTeamInboxes.length < 2) {
+      console.log(`Scheduler: Team ${teamId} has less than 2 connected inboxes total`);
+      return;
+    }
+
+    for (const { inbox, state } of poolInboxes) {
+      await this.scheduleInboxJobs(inbox, state, allTeamInboxes, today, false);
+    }
+  }
+
+  private async scheduleNetworkWarmups(
+    inbox: WarmupInbox,
+    state: WarmupState,
+    today: string,
+  ) {
+    // Query assigned admin inboxes
+    const { data: assignments, error } = await this.supabase
+      .from('admin_inbox_assignments')
+      .select('admin_inbox_id, admin_inboxes(id, email, status, health_score)')
+      .eq('inbox_id', inbox.id);
+
+    if (error) {
+      console.error(`Failed to fetch admin inbox assignments for ${inbox.email}:`, error);
+      return;
+    }
+
+    // Filter to active admin inboxes only
+    const activeAdminInboxes = (assignments ?? [])
+      .map((a: any) => a.admin_inboxes)
+      .filter((ai: any) => ai && ai.status === 'active');
+
+    if (activeAdminInboxes.length === 0) {
+      console.log(`Scheduler: No active admin inboxes assigned to ${inbox.email}, skipping network warmup`);
+      return;
+    }
+
+    // Calculate quota same as pool mode
+    const quota = calculateWarmupQuota(state.current_day, state.ramp_speed);
+    const pendingInQueue = await this.getPendingJobCount(inbox.id);
+    const remaining = Math.max(0, quota - state.sent_today - pendingInQueue);
+
+    console.log(`Scheduler: Network ${inbox.email} - Day ${state.current_day}, Quota: ${quota}, Sent: ${state.sent_today}, Pending: ${pendingInQueue}, Remaining: ${remaining}`);
+
+    if (remaining <= 0) {
+      console.log(`Scheduler: ${inbox.email} already met daily quota or has enough pending jobs`);
+      return;
+    }
+
+    const intervalMs = Math.floor(WORK_HOURS_MS / Math.max(remaining, 1));
+
+    for (let i = 0; i < remaining; i++) {
+      // Alternate between user->admin and admin->user sends
+      const adminInbox = activeAdminInboxes[i % activeAdminInboxes.length];
+      const isUserSending = i % 2 === 0;
+
+      const fromId = isUserSending ? inbox.id : `admin:${adminInbox.id}`;
+      const toId = isUserSending ? `admin:${adminInbox.id}` : inbox.id;
+
+      const baseDelay = i * intervalMs;
+      const jitter = randomDelay(0, Math.min(intervalMs * 0.2, 60000));
+      const delay = baseDelay + jitter;
+
+      const jobId = `warmup-net-${inbox.id}-${today}-${i}`;
+
+      try {
+        await this.warmupQueue.add(
+          'warmup-send',
+          {
+            fromInboxId: fromId,
+            toInboxId: toId,
+            isNetworkWarmup: true,
+          },
+          {
+            delay,
+            jobId,
+            removeOnComplete: 100,
+            removeOnFail: 50,
+            attempts: 3,
+            backoff: {
+              type: 'exponential',
+              delay: 60000,
+            },
+          }
+        );
+
+        console.log(`Scheduled network warmup: ${fromId} -> ${toId} (delay: ${Math.round(delay / 60000)}min, jobId: ${jobId})`);
+      } catch (error: any) {
+        if (error.message?.includes('Job already exists')) {
+          // Skip silently
+        } else {
+          console.error(`Scheduler: Failed to add network job ${jobId}:`, error.message);
+        }
+      }
+    }
+
+    // Update health score
+    const healthScore = calculateHealthScore({
+      warmupEnabled: state.enabled,
+      currentDay: state.current_day,
+      sentTotal: state.sent_total,
+      repliedTotal: state.replied_total,
+      bounceRate: inbox.bounce_rate_7d ?? 0,
+      spamRate: 0,
+    });
+
+    await this.supabase
+      .from('inboxes')
+      .update({ health_score: healthScore })
+      .eq('id', inbox.id);
+  }
+
+  private async scheduleInboxJobs(
+    inbox: WarmupInbox,
+    state: WarmupState,
+    allTeamInboxes: Array<{ id: string; email: string; status: string }>,
+    today: string,
+    isNetwork: boolean,
+  ) {
+    // Calculate quota for this inbox
+    const quota = calculateWarmupQuota(state.current_day, state.ramp_speed);
+
+    // Get pending jobs already in queue for this inbox
+    const pendingInQueue = await this.getPendingJobCount(inbox.id);
+
+    // Calculate remaining emails needed (quota - already sent - pending in queue)
+    const remaining = Math.max(0, quota - state.sent_today - pendingInQueue);
+
+    console.log(`Scheduler: ${inbox.email} - Day ${state.current_day}, Quota: ${quota}, Sent: ${state.sent_today}, Pending: ${pendingInQueue}, Remaining: ${remaining}`);
+
+    if (remaining <= 0) {
+      console.log(`Scheduler: ${inbox.email} already met daily quota or has enough pending jobs`);
+      return;
+    }
+
+    // Calculate interval to spread emails across work hours
+    const intervalMs = Math.floor(WORK_HOURS_MS / Math.max(remaining, 1));
+
+    for (let i = 0; i < remaining; i++) {
+      // Pick a random target inbox (not self)
+      const targets = allTeamInboxes.filter(t => t.id !== inbox.id);
+      if (targets.length === 0) {
+        console.log(`Scheduler: No targets available for ${inbox.email}`);
+        continue;
+      }
+
+      const targetInbox = targets[Math.floor(Math.random() * targets.length)];
+
+      // Calculate delay to spread across work hours with some jitter
+      const baseDelay = i * intervalMs;
+      const jitter = randomDelay(0, Math.min(intervalMs * 0.2, 60000)); // Up to 20% jitter or 1 minute
+      const delay = baseDelay + jitter;
+
+      // Use unique job ID to prevent duplicates
+      const jobId = `warmup-${inbox.id}-${today}-${i}`;
+
+      try {
+        await this.warmupQueue.add(
+          'warmup-send',
+          {
+            fromInboxId: inbox.id,
+            toInboxId: targetInbox.id,
+          },
+          {
+            delay,
+            jobId, // Unique ID prevents duplicate jobs
+            removeOnComplete: 100,
+            removeOnFail: 50,
+            attempts: 3,
+            backoff: {
+              type: 'exponential',
+              delay: 60000, // Start with 1 minute
+            },
+          }
+        );
+
+        console.log(`Scheduled warmup: ${inbox.email} -> ${targetInbox.email} (delay: ${Math.round(delay / 60000)}min, jobId: ${jobId})`);
+      } catch (error: any) {
+        // Job with this ID already exists - skip silently
+        if (error.message?.includes('Job already exists')) {
+          console.log(`Scheduler: Job ${jobId} already exists, skipping`);
+        } else {
+          console.error(`Scheduler: Failed to add job ${jobId}:`, error.message);
+        }
+      }
+    }
+
+    // Update health score including bounce/spam rates
+    const healthScore = calculateHealthScore({
+      warmupEnabled: state.enabled,
+      currentDay: state.current_day,
+      sentTotal: state.sent_total,
+      repliedTotal: state.replied_total,
+      bounceRate: inbox.bounce_rate_7d ?? 0,
+      // Spam rate is approximated from lack of replies (very conservative estimate)
+      spamRate: 0, // TODO: Track actual spam complaints when available
+    });
+
+    await this.supabase
+      .from('inboxes')
+      .update({ health_score: healthScore })
+      .eq('id', inbox.id);
   }
 
   private async checkDailyReset() {
@@ -305,6 +476,13 @@ export class WarmupScheduler {
             .update({ current_day: ws.current_day + 1 })
             .eq('inbox_id', ws.inbox_id);
         }
+      }
+
+      // Reset admin inbox daily counters
+      try {
+        await this.supabase.rpc('reset_admin_inbox_daily_counters');
+      } catch (rpcError) {
+        console.warn('Failed to reset admin inbox daily counters (function may not exist yet):', rpcError);
       }
 
       // Store today's date in Redis

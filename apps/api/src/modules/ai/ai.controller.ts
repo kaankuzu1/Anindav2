@@ -123,6 +123,69 @@ export class AIController {
   }
 
   // ============================================
+  // AI CSV Column Mapping
+  // ============================================
+
+  @Post('map-columns')
+  async mapCsvColumns(
+    @Body() body: {
+      headers: string[];
+      sampleRows: string[][];
+    },
+  ) {
+    return this.aiService.mapCsvColumns(body.headers, body.sampleRows);
+  }
+
+  // ============================================
+  // AI Smart Template Personalization
+  // ============================================
+
+  @Post('personalize-email')
+  async personalizeEmail(
+    @Body() body: {
+      subject: string;
+      body: string;
+      lead: { firstName?: string; lastName?: string; company?: string; title?: string; analysisNotes?: string; country?: string; city?: string; linkedinUrl?: string; website?: string };
+      tone?: string;
+      country?: string;
+      creatorNotes?: string;
+      toneEnabled?: boolean;
+      languageMatch?: boolean;
+      sender?: { firstName?: string; lastName?: string; company?: string; title?: string; website?: string };
+    },
+  ) {
+    // Step 1: Replace [placeholders] with AI-generated content
+    let result = await this.aiService.personalizeEmail(
+      body.subject,
+      body.body,
+      body.lead,
+      body.tone,
+      body.country,
+      body.creatorNotes,
+      body.toneEnabled ?? false,
+      body.languageMatch ?? true,
+      body.sender,
+    );
+
+    // Step 2: Apply whole-template tone adjustment and/or language translation
+    const toneLanguageResult = await this.aiService.applyToneAndLanguage(
+      result.subject,
+      result.body,
+      body.tone || 'professional',
+      body.toneEnabled ?? false,
+      body.country,
+      body.languageMatch ?? true,
+      body.creatorNotes,
+    );
+
+    if (toneLanguageResult) {
+      result = toneLanguageResult;
+    }
+
+    return result;
+  }
+
+  // ============================================
   // Batch Intent Detection
   // ============================================
 

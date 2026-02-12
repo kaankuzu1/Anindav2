@@ -35,6 +35,24 @@
     --warning-foreground: 38 92% 30%;
     --info: 217 90% 60%;
     --info-foreground: 217 90% 30%;
+
+    /* Stat card colors - Light mode */
+    --stat-blue-bg: 217 91% 92%;
+    --stat-blue: 217 91% 60%;
+    --stat-green-bg: 142 71% 92%;
+    --stat-green: 142 71% 45%;
+    --stat-purple-bg: 262 47% 92%;
+    --stat-purple: 262 47% 55%;
+    --stat-pink-bg: 330 65% 92%;
+    --stat-pink: 330 65% 60%;
+    --stat-orange-bg: 25 95% 92%;
+    --stat-orange: 25 95% 50%;
+
+    /* Chart colors */
+    --chart-contacted: 217 91% 60%;
+    --chart-opened: 45 93% 55%;
+    --chart-replied: 142 71% 45%;
+    --chart-positive: 25 95% 50%;
   }
 
   .dark {
@@ -83,6 +101,24 @@
     --warning-foreground: 38 92% 90%;
     --info: 217 90% 60%;
     --info-foreground: 217 90% 90%;
+
+    /* Stat card colors - Dark mode */
+    --stat-blue-bg: 217 91% 15%;
+    --stat-blue: 217 91% 65%;
+    --stat-green-bg: 142 71% 15%;
+    --stat-green: 142 71% 50%;
+    --stat-purple-bg: 262 47% 15%;
+    --stat-purple: 262 47% 60%;
+    --stat-pink-bg: 330 65% 15%;
+    --stat-pink: 330 65% 65%;
+    --stat-orange-bg: 25 95% 15%;
+    --stat-orange: 25 95% 55%;
+
+    /* Chart colors - same as light mode */
+    --chart-contacted: 217 91% 60%;
+    --chart-opened: 45 93% 55%;
+    --chart-replied: 142 71% 45%;
+    --chart-positive: 25 95% 50%;
   }
 }
 
@@ -92,5 +128,93 @@
   }
   body {
     @apply bg-background text-foreground;
+  }
+
+  /* Smooth scrolling */
+  html {
+    scroll-behavior: smooth;
+  }
+
+  /* Focus visible for keyboard navigation */
+  :focus-visible {
+    @apply outline-none ring-2 ring-primary ring-offset-2 ring-offset-background;
+  }
+}
+
+/* ============================================
+   Landing page styles
+   ============================================ */
+.bg-crosshatch {
+  background-image:
+    repeating-linear-gradient(45deg, transparent, transparent 7px, rgba(255,255,255,0.03) 7px, rgba(255,255,255,0.03) 8px),
+    repeating-linear-gradient(-45deg, transparent, transparent 7px, rgba(255,255,255,0.03) 7px, rgba(255,255,255,0.03) 8px);
+}
+.bg-crosshatch-dark {
+  background-image:
+    repeating-linear-gradient(45deg, transparent, transparent 7px, rgba(255,255,255,0.05) 7px, rgba(255,255,255,0.05) 8px),
+    repeating-linear-gradient(-45deg, transparent, transparent 7px, rgba(255,255,255,0.05) 7px, rgba(255,255,255,0.05) 8px);
+}
+.halftone { position: relative; }
+.halftone::after {
+  content: ""; position: absolute; inset: 0;
+  background-image: radial-gradient(circle, #fff 1px, transparent 1px);
+  background-size: 4px 4px; mix-blend-mode: screen; opacity: 0.06; pointer-events: none;
+}
+.section-divider { border-top: 1px dashed #1e293b; }
+.gradient-text {
+  background: linear-gradient(135deg, #818cf8, #c084fc);
+  -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text;
+}
+.bg-gradient-primary { background: linear-gradient(135deg, #6366f1, #8b5cf6); }
+.bg-gradient-primary:hover { background: linear-gradient(135deg, #818cf8, #a78bfa); }
+
+/* Card hover lift effect */
+@layer utilities {
+  .card-hover {
+    @apply transition-all duration-200 ease-out;
+  }
+  .card-hover:hover {
+    @apply -translate-y-0.5 shadow-lg;
+  }
+}
+
+/* Warmup animated status - Claude thinking style */
+@keyframes warmup-gradient {
+  0%, 100% {
+    background-position: 0% 50%;
+  }
+  50% {
+    background-position: 100% 50%;
+  }
+}
+
+.animate-warmup-gradient {
+  background: linear-gradient(
+    90deg,
+    #f97316,
+    #fb923c,
+    #fbbf24,
+    #f59e0b,
+    #ea580c,
+    #f97316
+  );
+  background-size: 200% 100%;
+  animation: warmup-gradient 3s ease-in-out infinite;
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+
+/* ============================================
+   Reduced motion support
+   ============================================ */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
   }
 }

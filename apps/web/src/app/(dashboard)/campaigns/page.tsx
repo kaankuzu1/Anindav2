@@ -1,35 +1,48 @@
+'use client';
+
+import { useEffect, useState } from 'react';
 import Link from 'next/link';
-import { createClient } from '@/lib/supabase/server';
+import { createClient } from '@/lib/supabase/client';
+import { useTeam } from '@/hooks/use-team';
 import { Plus, Play, Pause, MoreVertical } from 'lucide-react';
 
-export default async function CampaignsPage() {
+export default function CampaignsPage() {
   const supabase = createClient();
+  const { teamId, loading: teamLoading } = useTeam();
 
-  // Get user and team
-  const { data: { user } } = await supabase.auth.getUser();
-  let teamId: string | null = null;
+  const [loading, setLoading] = useState(true);
+  const [campaigns, setCampaigns] = useState<any[]>([]);
 
-  if (user) {
-    const { data: teamMembers } = await supabase
-      .from('team_members')
-      .select('team_id')
-      .eq('user_id', user.id)
-      .limit(1) as { data: { team_id: string }[] | null };
-
-    if (teamMembers && teamMembers.length > 0) {
-      teamId = teamMembers[0].team_id;
+  useEffect(() => {
+    if (teamLoading) return;
+    if (!teamId) {
+      setLoading(false);
+      return;
     }
+
+    async function fetchData() {
+      const { data } = await supabase
+        .from('campaigns')
+        .select('*')
+        .eq('team_id', teamId!)
+        .order('created_at', { ascending: false });
+
+      setCampaigns(data ?? []);
+      setLoading(false);
+    }
+
+    fetchData();
+  }, [teamId, teamLoading]);
+
+  if (teamLoading || loading) {
+    return (
+      <div className="flex items-center justify-center min-h-[400px]">
+        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary"></div>
+      </div>
+    );
   }
 
-  // Fetch campaigns from database
-  const { data: campaigns } = await supabase
-    .from('campaigns')
-    .select('*')
-    .eq('team_id', teamId ?? '')
-    .order('created_at', { ascending: false });
-
-  // Use real data
-  const displayCampaigns = campaigns ?? [];
+  const displayCampaigns = campaigns;
 
   return (
     <div className="space-y-6">
@@ -53,25 +66,25 @@ export default async function CampaignsPage() {
         <table className="w-full">
           <thead className="bg-muted/50">
             <tr>
-              <th className="px-6 py-3 text-left text-xs font-medium text-muted-foreground uppercase tracking-wider">
+              <th className="px-6 py-4 text-left text-xs font-medium text-muted-foreground uppercase tracking-wider">
                 Campaign
               </th>
-              <th className="px-6 py-3 text-left text-xs font-medium text-muted-foreground uppercase tracking-wider">
+              <th className="px-6 py-4 text-left text-xs font-medium text-muted-foreground uppercase tracking-wider">
                 Status
               </th>
-              <th className="px-6 py-3 text-left text-xs font-medium text-muted-foreground uppercase tracking-wider">
+              <th className="px-6 py-4 text-left text-xs font-medium text-muted-foreground uppercase tracking-wider">
                 Leads
               </th>
-              <th className="px-6 py-3 text-left text-xs font-medium text-muted-foreground uppercase tracking-wider">
+              <th className="px-6 py-4 text-left text-xs font-medium text-muted-foreground uppercase tracking-wider">
                 Sent
               </th>
-              <th className="px-6 py-3 text-left text-xs font-medium text-muted-foreground uppercase tracking-wider">
+              <th className="px-6 py-4 text-left text-xs font-medium text-muted-foreground uppercase tracking-wider">
                 Open Rate
               </th>
-              <th className="px-6 py-3 text-left text-xs font-medium text-muted-foreground uppercase tracking-wider">
+              <th className="px-6 py-4 text-left text-xs font-medium text-muted-foreground uppercase tracking-wider">
                 Reply Rate
               </th>
-              <th className="px-6 py-3 text-right text-xs font-medium text-muted-foreground uppercase tracking-wider">
+              <th className="px-6 py-4 text-right text-xs font-medium text-muted-foreground uppercase tracking-wider">
                 Actions
               </th>
             </tr>
@@ -89,8 +102,8 @@ export default async function CampaignsPage() {
                 : '0';
 
               return (
-                <tr key={campaign.id} className="hover:bg-muted/30">
-                  <td className="px-6 py-4">
+                <tr key={campaign.id} className="hover:bg-muted/30 transition-colors">
+                  <td className="px-6 py-5">
                     <Link
                       href={`/campaigns/${campaign.id}`}
                       className="font-medium text-foreground hover:text-primary"
@@ -98,7 +111,7 @@ export default async function CampaignsPage() {
                       {campaign.name}
                     </Link>
                   </td>
-                  <td className="px-6 py-4">
+                  <td className="px-6 py-5">
                     <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${
                       campaign.status === 'active'
                         ? 'bg-green-100 text-green-800 dark:bg-green-500/20 dark:text-green-300'
@@ -111,19 +124,19 @@ export default async function CampaignsPage() {
                       {campaign.status}
                     </span>
                   </td>
-                  <td className="px-6 py-4 text-muted-foreground">
+                  <td className="px-6 py-5 text-muted-foreground">
                     {(campaign.lead_count ?? 0).toLocaleString()}
                   </td>
-                  <td className="px-6 py-4 text-muted-foreground">
+                  <td className="px-6 py-5 text-muted-foreground">
                     {(campaign.sent_count ?? 0).toLocaleString()}
                   </td>
-                  <td className="px-6 py-4 text-muted-foreground">
+                  <td className="px-6 py-5 text-muted-foreground">
                     {openRate}%
                   </td>
-                  <td className="px-6 py-4 text-muted-foreground">
+                  <td className="px-6 py-5 text-muted-foreground">
                     {replyRate}%
                   </td>
-                  <td className="px-6 py-4 text-right">
+                  <td className="px-6 py-5 text-right">
                     <div className="flex items-center justify-end gap-2">
                       {campaign.status === 'active' ? (
                         <button className="p-2 text-muted-foreground hover:text-foreground rounded-lg hover:bg-accent">

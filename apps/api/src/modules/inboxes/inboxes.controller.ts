@@ -10,11 +10,11 @@ import {
   Req,
   Query,
 } from '@nestjs/common';
-import { AuthGuard } from '@nestjs/passport';
+import { SupabaseAuthGuard } from '../../shared/guards/supabase-auth.guard';
 import { InboxesService } from './inboxes.service';
 
 @Controller('inboxes')
-@UseGuards(AuthGuard('jwt'))
+@UseGuards(SupabaseAuthGuard)
 export class InboxesController {
   constructor(private readonly inboxesService: InboxesService) {}
 
@@ -62,5 +62,29 @@ export class InboxesController {
     @Query('team_id') teamId: string,
   ) {
     return this.inboxesService.deleteInbox(inboxId, teamId);
+  }
+
+  /**
+   * Check DNS configuration for an inbox
+   * GET /inboxes/:id/dns-check
+   */
+  @Get(':id/dns-check')
+  async checkInboxDns(
+    @Param('id') inboxId: string,
+    @Query('team_id') teamId: string,
+  ) {
+    return this.inboxesService.checkInboxDns(inboxId, teamId);
+  }
+
+  /**
+   * Check if an inbox's email account connection is still valid
+   * POST /inboxes/:id/check-connection
+   */
+  @Post(':id/check-connection')
+  async checkConnection(
+    @Param('id') inboxId: string,
+    @Query('team_id') teamId: string,
+  ) {
+    return this.inboxesService.checkConnection(inboxId, teamId);
   }
 }

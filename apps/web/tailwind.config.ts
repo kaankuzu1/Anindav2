@@ -55,6 +55,9 @@ const config: Config = {
           foreground: 'hsl(var(--info-foreground))',
         },
       },
+      fontFamily: {
+        serif: ['var(--font-instrument-serif)', 'ui-serif', 'Georgia', 'serif'],
+      },
       borderRadius: {
         lg: 'var(--radius)',
         md: 'calc(var(--radius) - 2px)',

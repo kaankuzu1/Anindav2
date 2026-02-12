@@ -5,7 +5,10 @@ import { ConfigService } from '@nestjs/config';
 import { AuthController } from './auth.controller';
 import { AuthService } from './auth.service';
 import { SupabaseStrategy } from './supabase.strategy';
+import { SupabaseAuthGuard } from '../../shared/guards/supabase-auth.guard';
+import { AdminAuthGuard } from '../../shared/guards/admin-auth.guard';
 import { InboxesModule } from '../inboxes/inboxes.module';
+import { AdminModule } from '../admin/admin.module';
 import { DatabaseModule } from '../../shared/database/database.module';
 
 @Module({
@@ -22,9 +25,10 @@ import { DatabaseModule } from '../../shared/database/database.module';
       inject: [ConfigService],
     }),
     forwardRef(() => InboxesModule),
+    AdminModule,
   ],
   controllers: [AuthController],
-  providers: [AuthService, SupabaseStrategy],
+  providers: [AuthService, SupabaseStrategy, SupabaseAuthGuard, AdminAuthGuard],
   exports: [AuthService],
 })
 export class AuthModule {}
