@@ -309,7 +309,7 @@ export class WarmupService {
     const { data, error } = await this.supabase
       .from('warmup_interactions')
       .select('*')
-      .eq('inbox_id', inboxId)
+      .or(`from_inbox_id.eq.${inboxId},to_inbox_id.eq.${inboxId}`)
       .gte('created_at', startDate.toISOString())
       .order('created_at', { ascending: true });
 
@@ -323,9 +323,9 @@ export class WarmupService {
       if (!history[date]) {
         history[date] = { sent: 0, received: 0, replied: 0 };
       }
-      if (interaction.type === 'sent') history[date].sent++;
-      if (interaction.type === 'received') history[date].received++;
-      if (interaction.type === 'replied') history[date].replied++;
+      if (interaction.interaction_type === 'sent' && interaction.from_inbox_id === inboxId) history[date].sent++;
+      if (interaction.interaction_type === 'received' && interaction.to_inbox_id === inboxId) history[date].received++;
+      if (interaction.interaction_type === 'replied') history[date].replied++;
     }
 
     return Object.entries(history).map(([date, stats]) => ({
