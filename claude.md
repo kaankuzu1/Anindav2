@@ -481,6 +481,27 @@ Warmup supports two modes managed via a choice screen at `/warmup`:
 
 **User flow**: Choice screen → Select mode → See active + available inboxes → Assign inboxes → Enable warmup. Remove button unassigns inbox (sets `warmup_mode = null`).
 
+### Warmup Email Templates
+
+Warmup emails use 205 pre-written templates with personalization and Fisher-Yates shuffle deduplication to prevent repetition.
+
+**Template files:**
+- `apps/workers/src/warmup-templates.ts` — 105 main templates, 50 reply templates, 30 continuation templates, 20 closer templates
+- `apps/workers/src/warmup-dedup.ts` — Redis-based dedup using shuffled index sequences per inbox-pair
+
+**Personalization variables** (uses the shared `processEmailContent()` pipeline):
+- `{{firstName|there}}` — Recipient's first name (extracted from `from_name`), falls back to "there"
+- `{{senderFirstName}}` — Sender's first name (extracted from `from_name`)
+
+**Dedup mechanism** (`getNextTemplateIndex()`):
+- Redis key: `warmup:dedup:{fromId}:{toId}:{type}` where type is `main`, `reply`, `continuation`, or `closer`
+- Stores a Fisher-Yates shuffled index sequence per inbox-pair + template type
+- Pops next index on each call; reshuffles automatically when exhausted
+- 7-day TTL per key to prevent stale data
+- Guarantees no duplicate templates until the full set cycles through
+
+**Reply subject fix**: Reply jobs receive `originalSubject` from the initial send job and use it with `Re:` prefix instead of the previously hardcoded `'Re: Quick question'`.
+
 ### Admin Panel
 
 Admin panel at `/admin` with separate auth (env-based credentials, not Supabase Auth).
@@ -550,6 +571,47 @@ Open/click tracking and campaign stat increments use atomic RPC functions to pre
 - Bounce rate > 3% or Spam rate > 1%: Auto-pause inbox
 - Health score < 50: Skip for campaigns
 - Health score determines send capacity (20-100 → 25-100%)
+
+## Railway Deployment
+
+Production is deployed on Railway with 4 services in the "Aninda" project.
+
+**Dashboard**: https://railway.com/project/09cd2aae-567f-42eb-864c-8b74acfffe07
+
+| Service | URL | Dockerfile |
+|---------|-----|------------|
+| web (Next.js) | https://web-production-e1385.up.railway.app | `Dockerfile.web` |
+| api (NestJS) | https://api-production-06e6.up.railway.app | `Dockerfile.api` |
+| workers (BullMQ) | No public URL (background) | `Dockerfile.workers` |
+| Redis | `redis.railway.internal:6379` | Railway-provisioned |
+
+**GitHub repo**: https://github.com/kaankuzu1/Anindav2 (main branch)
+
+**Dockerfiles** (root-level):
+- `Dockerfile.web` — Declares `NEXT_PUBLIC_*` as `ARG`/`ENV` so they're inlined during `next build`. Railway passes service variables as Docker build args automatically.
+- `Dockerfile.api` — Standard NestJS build
+- `Dockerfile.workers` — Standard workers build
+
+**Cross-service linking**:
+- `web` has `NEXT_PUBLIC_API_URL` → api Railway URL
+- `api` has `FRONTEND_URL` + `CORS_ORIGIN` → web Railway URL
+
+**Auto-deploy from GitHub**: Each service must be connected to the GitHub repo via the Railway dashboard (Settings → Source → Connect Repo → `kaankuzu1/Anindav2`). Once connected, every push to `main` auto-deploys all 3 services. Without this, deploys are manual via `railway up`.
+
+**Deploy workflow**:
+```bash
+# Manual deploy (if GitHub not connected)
+railway service link <service-name> && railway up --detach
+
+# Check logs
+railway logs -s <service-name> --lines 20
+
+# Set env vars (triggers auto-redeploy if GitHub connected)
+railway variable set "KEY=VALUE" -s <service-name> --skip-deploys  # skip redeploy
+railway variable set "KEY=VALUE" -s <service-name>                  # with redeploy
+```
+
+**Important**: `NEXT_PUBLIC_*` env vars are build-time in Next.js. If you change them, the web service must be rebuilt (not just restarted). The `Dockerfile.web` ARG declarations handle this — Railway passes env vars as build args during Docker builds.
 
 ## Environment Variables
 
@@ -639,6 +701,8 @@ apps/workers/.env     # Same as API
 - `apps/web/src/app/(dashboard)/leads/page.tsx` - Leads table with inline editing (click-to-edit Contact/Company, floating save bar)
 - `apps/web/src/app/(dashboard)/leads/import/page.tsx` - Lead import with column mapping UI + AI detection
 - `apps/workers/src/warmup.ts` - Warmup email sending with reactive disconnection detection
+- `apps/workers/src/warmup-templates.ts` - 205 warmup email templates with {{firstName|there}} and {{senderFirstName}} personalization
+- `apps/workers/src/warmup-dedup.ts` - Fisher-Yates shuffle dedup via Redis for warmup template selection
 - `apps/web/src/components/warmup/` - Warmup UI components (mode card, stats grid, inbox table, unassigned card)
 - `apps/web/src/app/(dashboard)/warmup/` - Warmup pages (choice screen, pool, network)
 - `apps/web/src/lib/admin-api.ts` - Admin panel API client

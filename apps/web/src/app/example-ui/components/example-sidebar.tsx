@@ -46,11 +46,9 @@ export default function ExampleSidebar() {
       {/* Logo */}
       <div className={`flex items-center h-16 px-6 border-b ${dark ? 'border-slate-800' : 'border-gray-200'}`}>
         <div className="flex items-center gap-2.5">
-          <div className="flex h-7 w-7 items-center justify-center rounded-full bg-gradient-to-br from-indigo-500 to-violet-500">
-            <span className="text-xs font-bold leading-none text-white">A</span>
-          </div>
+          <img src="/logo.png" alt="Mindora Systems" className="w-7 h-7 rounded-full" />
           <span className={`text-xl font-bold tracking-tight ${dark ? 'text-white' : 'text-gray-900'}`}>
-            Aninda
+            Mindora
           </span>
         </div>
       </div>

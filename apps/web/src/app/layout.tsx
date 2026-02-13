@@ -7,8 +7,8 @@ const inter = Inter({ subsets: ['latin'] });
 const instrumentSerif = Instrument_Serif({ weight: '400', subsets: ['latin'], variable: '--font-instrument-serif' });
 
 export const metadata: Metadata = {
-  title: 'Aninda - Cold Email Platform',
-  description: 'Modern cold email outreach platform with inbox warm-up and deliverability protection',
+  title: 'Mindora Systems - Intelligent Outreach',
+  description: 'Intelligent outreach platform with inbox warm-up, campaign sequencing, and deliverability protection',
   icons: {
     icon: '/logo.png',
     apple: '/logo.png',

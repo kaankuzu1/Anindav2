@@ -2,7 +2,9 @@ import { Worker, Job, Queue } from 'bullmq';
 import type { Redis } from 'ioredis';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { GmailClient, MicrosoftClient } from '@aninda/email-client';
-import { calculateWarmupQuota, decrypt, encrypt, randomDelay } from '@aninda/shared';
+import { calculateWarmupQuota, decrypt, encrypt, randomDelay, processEmailContent } from '@aninda/shared';
+import { WARMUP_TEMPLATES, WARMUP_REPLY_TEMPLATES, WARMUP_CONTINUATION_TEMPLATES, WARMUP_CLOSER_TEMPLATES } from './warmup-templates';
+import { getNextTemplateIndex } from './warmup-dedup';
 
 interface WarmupSendJob {
   fromInboxId: string;
@@ -15,6 +17,7 @@ interface WarmupReplyJob {
   toInboxId: string;
   fromInboxId: string;
   threadId: string;
+  originalSubject?: string;   // Actual subject of the thread for Re: prefix
   threadDepth?: number;       // Current depth of the thread (1 = initial reply)
   maxThreadDepth?: number;    // Target depth for this thread (2-5)
   isNetworkWarmup?: boolean;
@@ -31,191 +34,16 @@ interface ResolvedInbox {
   isAdmin: boolean;
 }
 
-const WARMUP_SUBJECTS = [
-  // Questions
-  'Quick question about our meeting',
-  'Following up on our conversation',
-  'Checking in on the project status',
-  'Question about next steps',
-  'Any updates on the proposal?',
-  'Wondering about your availability',
-  'Quick clarification needed',
-  'Thoughts on the timeline?',
-
-  // Casual check-ins
-  'Just wanted to say hi',
-  'Hope you had a great weekend',
-  'How are things going?',
-  'Touching base before the holidays',
-  'Been a while - how are you?',
-  'Quick hello from the team',
-  'Hope your week is going well',
-
-  // Updates
-  'Quick update on our progress',
-  'Some news to share',
-  'Brief status update',
-  'Wanted to keep you in the loop',
-  'Updates from our end',
-  'Progress report - looking good',
-
-  // Requests
-  'Could use your input',
-  'Would love your thoughts',
-  'Quick favor to ask',
-  'Need your expertise on something',
-  'Time for a quick chat?',
-
-  // Professional casual
-  'Re: Our discussion',
-  'Following up as promised',
-  'As we discussed earlier',
-  'Circling back on this',
-  'Per our last conversation',
-  'Thanks for your time yesterday',
-];
-
-const WARMUP_BODIES = [
-  // Friendly check-ins
-  'Hope you\'re having a great day! Just wanted to check in and see how everything is going on your end. Let me know if there\'s anything I can help with.',
-
-  'How\'s everything going? I was thinking about our last conversation and wanted to follow up. Hope things are progressing well!',
-
-  'Just a quick note to say hello and see how things are going. It\'s been a busy week here, but I wanted to make sure we stay connected.',
-
-  'Wanted to touch base with you and see if you had any questions. Happy to jump on a quick call if that would be helpful.',
-
-  'Hope all is well on your end! I know things can get hectic, so just wanted to send a friendly reminder that I\'m here if you need anything.',
-
-  // Professional updates
-  'I wanted to give you a quick update on where things stand. We\'ve been making good progress and should have more to share soon. Let me know if you\'d like to discuss.',
-
-  'Just following up on our previous discussion. I\'ve had some time to think things over and have a few ideas I\'d love to bounce off you when you have a moment.',
-
-  'Hope your week is going well! I was reviewing some of the points we discussed and wanted to share some additional thoughts. Would love to hear your perspective.',
-
-  'Checking in to see if you had a chance to review the information I sent over. No rush at all - just wanted to make sure it came through okay.',
-
-  'I hope this email finds you well. I wanted to follow up and see if there\'s anything else you need from my end. Happy to help however I can.',
-
-  // Casual professional
-  'Hey! Hope you\'re doing well. Just wanted to drop a quick note and see how things are going. Let me know if you have time for a quick chat this week.',
-
-  'I hope you had a great weekend! Just wanted to touch base and see if there\'s anything new on your end. Looking forward to catching up.',
-
-  'Quick note to say thanks again for your time. I really appreciated our conversation and look forward to staying in touch.',
-
-  'I was just thinking about our project and wanted to reach out. Hope everything is going smoothly. Let me know if there\'s anything I can do to help.',
-
-  'Hope things are going great! I know we\'ve both been busy, but I wanted to make sure we keep the lines of communication open. Feel free to reach out anytime.',
-
-  // Questions
-  'I had a quick question come up and thought you might be the best person to ask. When you get a chance, could you let me know your thoughts? No rush!',
-
-  'I was reviewing some notes and realized I had a question I forgot to ask. Would you mind sharing your thoughts when you have a moment?',
-
-  'Something came up that made me think of our conversation. Would love to get your input when you have some time. Let me know what works for you.',
-
-  'I hope you\'re having a productive week! I wanted to circle back on a few things we discussed. Let me know when would be a good time to connect.',
-
-  'Just wanted to reach out and see if you had any updates. I\'m flexible on timing, so just let me know what works best for your schedule.',
-];
-
-const WARMUP_REPLIES = [
-  // Appreciative
-  'Thanks so much for reaching out! I really appreciate you taking the time to connect. Everything is going well on my end - hope the same is true for you!',
-
-  'Got your message - thanks for the update! Things are moving along nicely here. Let\'s definitely stay in touch.',
-
-  'I appreciate you checking in! It\'s always great to hear from you. Things are busy but good. Let me know if you need anything from my side.',
-
-  // Positive responses
-  'Thanks for the message! I\'ve been meaning to reach out as well. Great timing! Let\'s catch up soon when you have a moment.',
-
-  'Great to hear from you! Thanks for keeping me in the loop. Everything sounds good. Looking forward to our next conversation.',
-
-  'Thanks for following up! I was just thinking about this the other day. Let me know if you\'d like to schedule some time to discuss further.',
-
-  // Casual friendly
-  'Hey, thanks for reaching out! Hope you\'re doing well too. Things are going great here. Let\'s definitely connect soon!',
-
-  'Thanks for the note! Always good to hear from you. I\'ll take a look at everything and get back to you if I have any questions.',
-
-  'Appreciate you thinking of me! Everything is going smoothly on this end. Feel free to reach out anytime if you need anything.',
-
-  // Professional
-  'Thank you for the update - very helpful! I\'ll review everything and let you know if I have any questions. Looking forward to staying connected.',
-
-  'Thanks for keeping me posted! This is really helpful. I\'ll circle back if anything comes up on my end.',
-
-  'I appreciate the follow-up! Everything looks good from my perspective. Don\'t hesitate to reach out if there\'s anything else I can help with.',
-
-  // Brief but warm
-  'Thanks for checking in! All good here. Talk soon!',
-
-  'Got it, thanks for the heads up! Let me know if you need anything else.',
-
-  'Thanks so much! This is exactly what I needed. Hope your week is going well!',
-];
-
-// Thread continuation replies - for multi-level warmup threads
-const WARMUP_THREAD_CONTINUATIONS = [
-  // Follow-up questions
-  'That\'s great to hear! By the way, I was wondering - do you have any updates on the timeline we discussed?',
-
-  'Thanks for getting back to me! Just curious, have you had a chance to look into what we talked about last time?',
-
-  'Good to know! Speaking of which, I wanted to ask - are you still planning to move forward with that project?',
-
-  // Acknowledging and extending
-  'Perfect, that makes sense. I\'ll make a note of that. Is there anything else you need from my side before we proceed?',
-
-  'I appreciate the clarification! That\'s really helpful. Let me know if anything changes on your end.',
-
-  'Thanks for the update. I\'ll keep that in mind going forward. Feel free to reach out if you need anything else!',
-
-  // Casual continuations
-  'Sounds good! I\'ll follow up with you later this week if that works. Hope you have a great rest of your day!',
-
-  'Awesome, thanks for letting me know! I\'ll touch base again soon. Take care!',
-
-  'Great, glad we\'re on the same page. Let\'s keep the momentum going. Talk to you soon!',
-
-  // Professional wrap-ups
-  'Noted, thank you! I\'ll make sure to keep you in the loop on any developments. Looking forward to our continued collaboration.',
-
-  'Perfect, I think we have a good plan. I\'ll send over any relevant updates as they come in.',
-
-  'Sounds like a plan! I\'ll follow up next week with more details. Thanks again for your time.',
-
-  // Short continuations
-  'Makes sense, thanks for explaining. Let\'s catch up again soon.',
-
-  'Got it! I\'ll be in touch. Have a great day!',
-
-  'Perfect. Looking forward to hearing more. Talk soon!',
-
-  'Thanks again! Will keep you posted on my end as well.',
-];
-
-// Final thread closer replies - for ending multi-level threads naturally
-const WARMUP_THREAD_CLOSERS = [
-  'Sounds perfect! Thanks for the great conversation. Looking forward to connecting again soon. Have a wonderful rest of your week!',
-
-  'Glad we could catch up! I think we covered everything for now. Let\'s definitely stay in touch. Take care!',
-
-  'Thanks for taking the time to chat! I feel like we\'re making good progress. Let\'s touch base again next week if that works for you.',
-
-  'Perfect, I think we\'re all set for now. Really appreciate you keeping me in the loop. Talk to you soon!',
-
-  'Great chat! Thanks for all the updates. I\'ll reach out if anything comes up on my end. Have a great one!',
-
-  'Thanks so much! This has been really helpful. Looking forward to our next conversation. Take care!',
-
-  'Wonderful, sounds like we have a plan. Thanks again for your time today. Best wishes!',
-
-  'I think we\'re good for now. Really appreciate you getting back to me. Let\'s keep in touch!',
-];
+/**
+ * Extract first name from a from_name string (e.g., "John Smith" → "John").
+ * Returns undefined if no name is available.
+ */
+function extractFirstName(fromName?: string | null): string | undefined {
+  if (!fromName) return undefined;
+  const trimmed = fromName.trim();
+  if (!trimmed) return undefined;
+  return trimmed.split(/\s+/)[0];
+}
 
 export class WarmupWorker {
   private sendWorker: Worker | null = null;
@@ -398,9 +226,21 @@ export class WarmupWorker {
     // Create email client
     const client = this.createEmailClient(fromInbox);
 
-    // Pick random subject and body
-    const subject = WARMUP_SUBJECTS[Math.floor(Math.random() * WARMUP_SUBJECTS.length)];
-    const body = WARMUP_BODIES[Math.floor(Math.random() * WARMUP_BODIES.length)];
+    // Pick template using dedup (no repeats until full cycle)
+    const templateIndex = await getNextTemplateIndex(this.redis, fromInbox.id, toInbox.id, 'main', WARMUP_TEMPLATES.length);
+    const template = WARMUP_TEMPLATES[templateIndex];
+
+    // Build variable map for personalization
+    const variables: Record<string, string | undefined> = {
+      firstName: extractFirstName(toInbox.from_name),
+      first_name: extractFirstName(toInbox.from_name),
+      senderFirstName: extractFirstName(fromInbox.from_name),
+      sender_first_name: extractFirstName(fromInbox.from_name),
+    };
+
+    // Process variables in subject and body
+    const subject = processEmailContent(template.subject, variables);
+    const body = processEmailContent(template.body, variables);
 
     // Send email
     let result: { messageId: string; threadId?: string; conversationId?: string };
@@ -410,7 +250,7 @@ export class WarmupWorker {
         from: fromInbox.email,
         fromName: fromInbox.from_name ?? undefined,
         subject,
-        htmlBody: `<p>${body}</p>`,
+        htmlBody: body.split('\n').map(line => `<p>${line}</p>`).join(''),
       });
     } catch (sendError: any) {
       if (this.isAuthError(sendError)) {
@@ -506,6 +346,7 @@ export class WarmupWorker {
         toInboxId: fromInboxId,
         fromInboxId: toInboxId,
         threadId: result.threadId,
+        originalSubject: subject,
         threadDepth: 1,
         maxThreadDepth,
         isNetworkWarmup,
@@ -524,7 +365,7 @@ export class WarmupWorker {
   }
 
   private async processReplyJob(job: Job<WarmupReplyJob>) {
-    const { originalMessageId, toInboxId, fromInboxId, threadId, threadDepth = 1, maxThreadDepth = 1, isNetworkWarmup } = job.data;
+    const { originalMessageId, toInboxId, fromInboxId, threadId, originalSubject, threadDepth = 1, maxThreadDepth = 1, isNetworkWarmup } = job.data;
 
     // Resolve inbox
     const fromInbox = await this.resolveInbox(fromInboxId);
@@ -539,20 +380,35 @@ export class WarmupWorker {
       await client.addStar(originalMessageId);
     }
 
-    // Pick appropriate reply based on thread depth
-    let replyBody: string;
+    // Pick appropriate reply template based on thread depth (with dedup)
     const isLastReply = threadDepth >= maxThreadDepth;
+    let templateBody: string;
 
     if (threadDepth === 1) {
-      // First reply - use standard replies
-      replyBody = WARMUP_REPLIES[Math.floor(Math.random() * WARMUP_REPLIES.length)];
+      const idx = await getNextTemplateIndex(this.redis, fromInbox.id, toInbox.id, 'reply', WARMUP_REPLY_TEMPLATES.length);
+      templateBody = WARMUP_REPLY_TEMPLATES[idx].body;
     } else if (isLastReply) {
-      // Final reply in thread - use thread closers for natural ending
-      replyBody = WARMUP_THREAD_CLOSERS[Math.floor(Math.random() * WARMUP_THREAD_CLOSERS.length)];
+      const idx = await getNextTemplateIndex(this.redis, fromInbox.id, toInbox.id, 'closer', WARMUP_CLOSER_TEMPLATES.length);
+      templateBody = WARMUP_CLOSER_TEMPLATES[idx].body;
     } else {
-      // Middle of thread - use continuation replies
-      replyBody = WARMUP_THREAD_CONTINUATIONS[Math.floor(Math.random() * WARMUP_THREAD_CONTINUATIONS.length)];
+      const idx = await getNextTemplateIndex(this.redis, fromInbox.id, toInbox.id, 'continuation', WARMUP_CONTINUATION_TEMPLATES.length);
+      templateBody = WARMUP_CONTINUATION_TEMPLATES[idx].body;
     }
+
+    // Build variable map for personalization
+    const variables: Record<string, string | undefined> = {
+      firstName: extractFirstName(toInbox.from_name),
+      first_name: extractFirstName(toInbox.from_name),
+      senderFirstName: extractFirstName(fromInbox.from_name),
+      sender_first_name: extractFirstName(fromInbox.from_name),
+    };
+
+    const replyBody = processEmailContent(templateBody, variables);
+
+    // Use original thread subject with Re: prefix
+    const replySubject = originalSubject
+      ? (originalSubject.startsWith('Re:') ? originalSubject : `Re: ${originalSubject}`)
+      : 'Re: Quick question';
 
     // Send reply
     let result: { messageId: string; threadId?: string; conversationId?: string };
@@ -561,8 +417,8 @@ export class WarmupWorker {
         to: toInbox.email,
         from: fromInbox.email,
         fromName: fromInbox.from_name ?? undefined,
-        subject: 'Re: Quick question',
-        htmlBody: `<p>${replyBody}</p>`,
+        subject: replySubject,
+        htmlBody: replyBody.split('\n').map(line => `<p>${line}</p>`).join(''),
         inReplyTo: originalMessageId,
         references: originalMessageId,
       });
@@ -638,6 +494,7 @@ export class WarmupWorker {
           toInboxId: fromInboxId,  // Swap: original sender becomes recipient
           fromInboxId: toInboxId,   // Swap: original recipient becomes sender
           threadId,
+          originalSubject,
           threadDepth: threadDepth + 1,
           maxThreadDepth,
           isNetworkWarmup,

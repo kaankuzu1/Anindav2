@@ -14,7 +14,7 @@ interface Testimonial {
 const testimonials: Testimonial[] = [
   {
     quote:
-      "Aninda transformed our outbound process. We went from 2% reply rates to 12% in the first month, and inbox warm-up means we never worry about deliverability.",
+      "Mindora transformed our outbound process. We went from 2% reply rates to 12% in the first month, and inbox warm-up means we never worry about deliverability.",
     author: "James Mitchell",
     role: "Head of Sales, GrowthStack",
     initials: "JM",
@@ -28,7 +28,7 @@ const testimonials: Testimonial[] = [
   },
   {
     quote:
-      "Managing 15 inboxes used to be a nightmare. Aninda's rotation and warm-up features made it effortless. Our deliverability has never been better.",
+      "Managing 15 inboxes used to be a nightmare. Mindora's rotation and warm-up features made it effortless. Our deliverability has never been better.",
     author: "David Kim",
     role: "Outbound Lead, CloudReach",
     initials: "DK",
