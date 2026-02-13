@@ -1,9 +1,18 @@
 import { createServerClient, type CookieOptions } from '@supabase/ssr';
-import { cookies } from 'next/headers';
+import { cookies, headers } from 'next/headers';
 import { NextResponse } from 'next/server';
 
+function getOrigin(request: Request): string {
+  const headersList = headers();
+  const host = headersList.get('x-forwarded-host') || headersList.get('host');
+  const proto = headersList.get('x-forwarded-proto') || 'https';
+  if (host) return `${proto}://${host}`;
+  return new URL(request.url).origin;
+}
+
 export async function GET(request: Request) {
-  const { searchParams, origin } = new URL(request.url);
+  const { searchParams } = new URL(request.url);
+  const origin = getOrigin(request);
   const teamId = searchParams.get('team_id');
 
   if (!teamId) {
