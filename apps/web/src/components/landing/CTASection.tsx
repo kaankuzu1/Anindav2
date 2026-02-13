@@ -31,7 +31,7 @@ export default function CTASection() {
           transition={{ duration: 0.6, delay: 0.1 }}
           className="text-slate-400 text-base md:text-lg max-w-xl text-center mx-auto mt-6"
         >
-          Join thousands of sales teams using Aninda to land more meetings and
+          Join thousands of sales teams using Mindora to land more meetings and
           close more deals.
         </motion.p>
 

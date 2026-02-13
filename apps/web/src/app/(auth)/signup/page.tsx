@@ -11,6 +11,7 @@ export default function SignupPage() {
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
   const [fullName, setFullName] = useState('');
+  const [agreedToTerms, setAgreedToTerms] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState(false);
@@ -106,8 +107,8 @@ export default function SignupPage() {
     <div className="min-h-screen flex items-center justify-center bg-gray-50">
       <div className="max-w-md w-full space-y-8 p-8 bg-white rounded-xl shadow-lg">
         <div className="flex flex-col items-center">
-          <Image src="/logo.png" alt="Aninda" width={64} height={64} className="w-16 h-16 mb-4" />
-          <h1 className="text-3xl font-bold text-center text-gray-900">Aninda</h1>
+          <Image src="/logo.png" alt="Mindora Systems" width={64} height={64} className="w-16 h-16 mb-4 rounded-full" />
+          <h1 className="text-3xl font-bold text-center text-gray-900">Mindora Systems</h1>
           <p className="mt-2 text-center text-gray-600">
             Create your account
           </p>
@@ -185,9 +186,29 @@ export default function SignupPage() {
             </div>
           </div>
 
+          <div className="flex items-start gap-2">
+            <input
+              id="terms"
+              type="checkbox"
+              checked={agreedToTerms}
+              onChange={(e) => setAgreedToTerms(e.target.checked)}
+              className="mt-1 h-4 w-4 rounded border-gray-300 text-primary focus:ring-primary"
+            />
+            <label htmlFor="terms" className="text-sm text-gray-600">
+              I agree to the{' '}
+              <Link href="/terms" target="_blank" className="text-primary hover:text-primary/80 underline">
+                Terms of Service
+              </Link>{' '}
+              and{' '}
+              <Link href="/privacy" target="_blank" className="text-primary hover:text-primary/80 underline">
+                Privacy Policy
+              </Link>
+            </label>
+          </div>
+
           <button
             type="submit"
-            disabled={loading}
+            disabled={loading || !agreedToTerms}
             className="w-full flex justify-center py-2 px-4 border border-transparent rounded-lg shadow-sm text-sm font-medium text-white bg-primary hover:bg-primary/90 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-primary disabled:opacity-50"
           >
             {loading ? 'Creating account...' : 'Create account'}
@@ -205,7 +226,7 @@ export default function SignupPage() {
 
         <button
           onClick={handleGoogleSignup}
-          disabled={loading}
+          disabled={loading || !agreedToTerms}
           className="w-full flex items-center justify-center gap-2 py-2 px-4 border border-gray-300 rounded-lg shadow-sm text-sm font-medium text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-primary disabled:opacity-50"
         >
           <svg className="w-5 h-5" viewBox="0 0 24 24">

@@ -1,7 +1,9 @@
 "use client";
 
 import { useRef } from "react";
+import Image from "next/image";
 import { motion, useInView } from "framer-motion";
+import Link from "next/link";
 import { Github, Twitter, Linkedin } from "lucide-react";
 
 const productLinks = ["Multi-Inbox", "Warm-Up", "Campaigns", "AI Replies"];
@@ -65,15 +67,11 @@ export default function Footer() {
             animate={isInView ? "visible" : "hidden"}
           >
             <a href="/" className="flex items-center gap-2.5">
-              <div className="flex h-7 w-7 items-center justify-center rounded-full bg-gradient-to-br from-indigo-500 to-violet-500">
-                <span className="text-xs font-bold leading-none text-white">
-                  A
-                </span>
-              </div>
-              <span className="text-lg font-bold text-white">Aninda</span>
+              <Image src="/logo.png" alt="Mindora Systems" width={28} height={28} className="w-7 h-7 rounded-full" />
+              <span className="text-lg font-bold text-white">Mindora</span>
             </a>
             <p className="mt-4 max-w-xs text-sm text-slate-400">
-              Cold email outreach platform for professional business development.
+              Intelligent outreach platform for professional business development.
             </p>
             <div className="mt-6 flex gap-4">
               <a
@@ -135,21 +133,21 @@ export default function Footer() {
         <div className="mt-12 border-t border-slate-800 pt-6 pb-8">
           <div className="flex flex-col items-center justify-between gap-4 md:flex-row">
             <p className="text-sm text-slate-600">
-              &copy; 2026 Aninda. All rights reserved.
+              &copy; 2026 Mindora Systems. All rights reserved.
             </p>
             <div className="flex gap-6">
-              <a
-                href="#privacy"
+              <Link
+                href="/privacy"
                 className="text-sm text-slate-600 transition-colors hover:text-white"
               >
                 Privacy Policy
-              </a>
-              <a
-                href="#terms"
+              </Link>
+              <Link
+                href="/terms"
                 className="text-sm text-slate-600 transition-colors hover:text-white"
               >
                 Terms of Service
-              </a>
+              </Link>
             </div>
           </div>
         </div>

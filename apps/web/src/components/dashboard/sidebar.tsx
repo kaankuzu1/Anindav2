@@ -52,8 +52,8 @@ export function Sidebar({ user }: SidebarProps) {
         {/* Logo */}
         <div className="flex items-center h-16 px-6 border-b border-gray-200 dark:border-[#2a2f3a]">
           <Link href="/dashboard" className="flex items-center gap-2">
-            <Image src="/logo.png" alt="Aninda" width={32} height={32} className="w-8 h-8" />
-            <span className="text-xl font-bold text-gray-900 dark:text-white">Aninda</span>
+            <Image src="/logo.png" alt="Mindora Systems" width={32} height={32} className="w-8 h-8 rounded-full" />
+            <span className="text-xl font-bold text-gray-900 dark:text-white">Mindora</span>
           </Link>
         </div>
 

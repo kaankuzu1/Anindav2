@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
+import Image from "next/image";
 import { motion, AnimatePresence } from "framer-motion";
 import { Menu, X } from "lucide-react";
 
@@ -43,11 +44,9 @@ export default function Navbar() {
       <nav className="mx-auto flex h-16 max-w-7xl items-center justify-between px-6 md:h-[72px]">
         {/* Logo */}
         <a href="/" className="flex items-center gap-2.5">
-          <div className="flex h-7 w-7 items-center justify-center rounded-full bg-gradient-to-br from-indigo-500 to-violet-500">
-            <span className="text-xs font-bold leading-none text-white">A</span>
-          </div>
+          <Image src="/logo.png" alt="Mindora Systems" width={28} height={28} className="w-7 h-7 rounded-full" />
           <span className="text-xl font-bold tracking-tight text-white">
-            Aninda
+            Mindora
           </span>
         </a>
 

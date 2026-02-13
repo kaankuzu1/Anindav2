@@ -52,8 +52,8 @@ export default function LoginPage() {
     <div className="min-h-screen flex items-center justify-center bg-gray-50">
       <div className="max-w-md w-full space-y-8 p-8 bg-white rounded-xl shadow-lg">
         <div className="flex flex-col items-center">
-          <Image src="/logo.png" alt="Aninda" width={64} height={64} className="w-16 h-16 mb-4" />
-          <h1 className="text-3xl font-bold text-center text-gray-900">Aninda</h1>
+          <Image src="/logo.png" alt="Mindora Systems" width={64} height={64} className="w-16 h-16 mb-4 rounded-full" />
+          <h1 className="text-3xl font-bold text-center text-gray-900">Mindora Systems</h1>
           <p className="mt-2 text-center text-gray-600">
             Sign in to your account
           </p>
