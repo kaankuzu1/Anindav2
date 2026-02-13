@@ -4,6 +4,8 @@ RUN corepack enable && corepack prepare pnpm@8.15.0 --activate
 
 WORKDIR /app
 
+ENV NODE_ENV=production
+
 COPY . .
 
 RUN pnpm install --frozen-lockfile

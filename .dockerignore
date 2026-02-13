@@ -5,8 +5,14 @@ tests/
 .claude/
 .env
 .env.*
+.env.local
 apps/api/.env
 apps/api/.env.example
 apps/workers/.env
 apps/workers/.env.example
 apps/web/.env.local
+apps/web/.env.local.example
+.DS_Store
+.turbo
+coverage
+*.log
