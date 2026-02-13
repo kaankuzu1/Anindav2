@@ -4,7 +4,14 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-**Aninda** is a personal cold email platform for professional business outreach with multi-inbox management, warm-up automation, campaign sequencing, and deliverability protection.
+**Mindora Systems** (internal codename: Aninda) is an intelligent outreach platform for professional business development with multi-inbox management, warm-up automation, campaign sequencing, and deliverability protection.
+
+### Branding
+
+- **User-facing brand**: "Mindora Systems" (short: "Mindora"). All UI, landing pages, auth pages, and legal pages use this name.
+- **Internal codename**: "Aninda" — used in `@aninda/*` package names, GitHub repo (`Anindav2`), Railway project name, and developer docs. Changing these would break the monorepo.
+- **Logo**: `apps/web/public/logo.png` — dark background with brain/compass icon. Referenced by sidebar, login, signup, favicon, and apple-icon.
+- **Domain**: `mindorasystems.com`
 
 ## Tech Stack
 
@@ -502,6 +509,30 @@ Warmup emails use 205 pre-written templates with personalization and Fisher-Yate
 
 **Reply subject fix**: Reply jobs receive `originalSubject` from the initial send job and use it with `Re:` prefix instead of the previously hardcoded `'Re: Quick question'`.
 
+### Legal Pages & Signup Consent
+
+Public-facing Terms of Service and Privacy Policy pages with a mandatory consent checkbox on signup.
+
+**Route group**: `(legal)` — no URL prefix, pages are at `/terms` and `/privacy`
+
+**Layout** (`apps/web/src/app/(legal)/layout.tsx`):
+- Server Component, no auth required
+- Header with logo + brand link to `/`, nav links to Terms/Privacy
+- `max-w-4xl` centered content area on `bg-gray-50`
+- Footer with copyright + legal links
+
+**Pages**:
+- `/terms` (`apps/web/src/app/(legal)/terms/page.tsx`) — 14 sections: acceptance, service description, account registration, acceptable use, email compliance (CAN-SPAM/GDPR/CASL/PECR), warm-up disclaimers, data ownership, IP, third-party integrations, payment, liability, indemnification, termination, contact (legal@mindorasystems.com)
+- `/privacy` (`apps/web/src/app/(legal)/privacy/page.tsx`) — 12 sections: introduction, data collection, usage, lead data processing (controller/processor model), AI & email content, storage & security, third-party services, retention, GDPR rights, cookies, policy changes, contact (privacy@mindorasystems.com)
+
+**Landing page footer** (`apps/web/src/components/landing/Footer.tsx`): Bottom bar links use Next.js `Link` to `/privacy` and `/terms` (replaced `#privacy`/`#terms` anchors).
+
+**Signup consent** (`apps/web/src/app/(auth)/signup/page.tsx`):
+- `agreedToTerms` state (default `false`)
+- Checkbox with label linking to `/terms` and `/privacy` (open in new tab via `target="_blank"`)
+- Both "Create account" (email/password) and "Google" (OAuth) buttons are `disabled` when `!agreedToTerms`
+- Existing `disabled:opacity-50` class handles visual disabled state
+
 ### Admin Panel
 
 Admin panel at `/admin` with separate auth (env-based credentials, not Supabase Auth).
@@ -578,23 +609,31 @@ Production is deployed on Railway with 4 services in the "Aninda" project.
 
 **Dashboard**: https://railway.com/project/09cd2aae-567f-42eb-864c-8b74acfffe07
 
+**Custom domain**: `https://mindorasystems.com` → web service (SSL via Let's Encrypt, auto-renewed by Railway)
+
 | Service | URL | Dockerfile |
 |---------|-----|------------|
-| web (Next.js) | https://web-production-e1385.up.railway.app | `Dockerfile.web` |
+| web (Next.js) | https://mindorasystems.com (primary) / https://web-production-e1385.up.railway.app | `Dockerfile.web` |
 | api (NestJS) | https://api-production-06e6.up.railway.app | `Dockerfile.api` |
 | workers (BullMQ) | No public URL (background) | `Dockerfile.workers` |
 | Redis | `redis.railway.internal:6379` | Railway-provisioned |
 
+**Domain DNS** (Hostinger): ALIAS `@` → `5xoto5rz.up.railway.app`, CNAME `www` → `mindorasystems.com`
+
 **GitHub repo**: https://github.com/kaankuzu1/Anindav2 (main branch)
 
 **Dockerfiles** (root-level):
-- `Dockerfile.web` — Declares `NEXT_PUBLIC_*` as `ARG`/`ENV` so they're inlined during `next build`. Railway passes service variables as Docker build args automatically.
-- `Dockerfile.api` — Standard NestJS build
-- `Dockerfile.workers` — Standard workers build
+- `Dockerfile.web` — Multi-stage build: builds with `NEXT_PUBLIC_*` ARGs, then copies Next.js standalone output to a slim runner image. Requires `sharp` for image optimization.
+- `Dockerfile.api` — Standard NestJS build with `NODE_ENV=production`
+- `Dockerfile.workers` — Standard workers build with `NODE_ENV=production`
+
+**Next.js Standalone Output**: `apps/web/next.config.js` uses `output: 'standalone'` with `outputFileTracingRoot` pointing to monorepo root. The runner stage copies `.next/standalone`, `.next/static`, and `public` — runs via `node apps/web/server.js` (not `next start`).
+
+**Proxy-aware Origin Detection**: All Next.js API routes (`/api/auth/*`) use `x-forwarded-host` and `x-forwarded-proto` headers to derive the real origin. This is required because standalone mode behind Railway's reverse proxy returns `0.0.0.0:3000` from `request.url`. Helper function `getOrigin()` in each route handles this.
 
 **Cross-service linking**:
 - `web` has `NEXT_PUBLIC_API_URL` → api Railway URL
-- `api` has `FRONTEND_URL` + `CORS_ORIGIN` → web Railway URL
+- `api` has `FRONTEND_URL` + `CORS_ORIGIN` → web Railway URL (CORS uses `CORS_ORIGIN` with `FRONTEND_URL` fallback)
 
 **Auto-deploy from GitHub**: Each service must be connected to the GitHub repo via the Railway dashboard (Settings → Source → Connect Repo → `kaankuzu1/Anindav2`). Once connected, every push to `main` auto-deploys all 3 services. Without this, deploys are manual via `railway up`.
 
@@ -612,6 +651,28 @@ railway variable set "KEY=VALUE" -s <service-name>                  # with redep
 ```
 
 **Important**: `NEXT_PUBLIC_*` env vars are build-time in Next.js. If you change them, the web service must be rebuilt (not just restarted). The `Dockerfile.web` ARG declarations handle this — Railway passes env vars as build args during Docker builds.
+
+### Google OAuth Configuration
+
+**Google Cloud Console project** for OAuth (Gmail inbox connection + Supabase Auth login).
+
+**OAuth Client ID**: `185462103920-a0ev0d37n4ubpua54ahaj2ba9e9ld54t.apps.googleusercontent.com`
+
+**Authorized redirect URIs** (Google Cloud Console → Credentials → Edit OAuth Client):
+| URI | Purpose |
+|-----|---------|
+| `https://rtbtgafvuhfcaevxxipf.supabase.co/auth/v1/callback` | Supabase Auth Google login |
+| `https://mindorasystems.com/api/auth/google/callback` | Gmail inbox connection (production) |
+| `https://web-production-e1385.up.railway.app/api/auth/google/callback` | Gmail inbox connection (Railway URL) |
+| `http://localhost:3000/api/auth/google/callback` | Gmail inbox connection (local dev) |
+
+**Authorized JavaScript origins**: `https://mindorasystems.com`, `https://web-production-e1385.up.railway.app`, `https://rtbtgafvuhfcaevxxipf.supabase.co`, `http://localhost:3000`
+
+**Supabase Auth** (Dashboard → Authentication → Providers → Google): Uses the same OAuth Client ID/Secret. Dashboard → URL Configuration: Site URL = `https://mindorasystems.com/`, Redirect URLs = `https://mindorasystems.com/api/auth/callback` + `https://web-production-e1385.up.railway.app/api/auth/callback`.
+
+**Gmail API scopes** requested during inbox connection: `gmail.send`, `gmail.readonly`, `gmail.modify`, `userinfo.email`, `userinfo.profile`
+
+**OAuth consent screen**: External, Testing mode (only added test users can connect). Requires Google verification for production use (sensitive Gmail scopes).
 
 ## Environment Variables
 
@@ -705,6 +766,9 @@ apps/workers/.env     # Same as API
 - `apps/workers/src/warmup-dedup.ts` - Fisher-Yates shuffle dedup via Redis for warmup template selection
 - `apps/web/src/components/warmup/` - Warmup UI components (mode card, stats grid, inbox table, unassigned card)
 - `apps/web/src/app/(dashboard)/warmup/` - Warmup pages (choice screen, pool, network)
+- `apps/web/src/app/(legal)/layout.tsx` - Legal pages shared layout (header, content, footer)
+- `apps/web/src/app/(legal)/terms/page.tsx` - Terms of Service (14 sections, cold email specific)
+- `apps/web/src/app/(legal)/privacy/page.tsx` - Privacy Policy (12 sections, GDPR-aware)
 - `apps/web/src/lib/admin-api.ts` - Admin panel API client
 - `apps/workers/src/connection-checker.ts` - Daily proactive inbox connection validation (04:00 UTC)
 - `apps/workers/src/index.ts` - Worker orchestration entry point
