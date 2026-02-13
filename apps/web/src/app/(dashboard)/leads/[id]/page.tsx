@@ -302,7 +302,7 @@ export default function LeadDetailPage() {
 
     try {
       const response = await fetch(
-        `${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001'}/leads/${lead.id}/verify?team_id=${teamId}`,
+        `${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001'}/api/v1/leads/${lead.id}/verify?team_id=${teamId}`,
         { method: 'POST' }
       );
 
