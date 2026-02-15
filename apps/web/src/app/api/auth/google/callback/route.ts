@@ -124,8 +124,31 @@ export async function GET(request: Request) {
             ? new Date(Date.now() + tokens.expires_in * 1000).toISOString()
             : null,
           status: 'active',
+          status_reason: null,
         })
         .eq('id', existing.id);
+
+      // Fix team-wide warmup desync: any inbox with status='warming_up' but warmup disabled
+      try {
+        const { data: desyncedInboxes } = await supabase
+          .from('inboxes')
+          .select('id, warmup_state(enabled)')
+          .eq('team_id', team_id)
+          .eq('status', 'warming_up');
+
+        for (const inbox of desyncedInboxes ?? []) {
+          const ws = inbox.warmup_state as any;
+          if (ws && !ws.enabled) {
+            await supabase
+              .from('inboxes')
+              .update({ status: 'active' })
+              .eq('id', inbox.id)
+              .eq('status', 'warming_up');
+          }
+        }
+      } catch {
+        // Non-critical — desync will be caught by reconcileWarmupState on next API call
+      }
 
       return NextResponse.redirect(`${origin}/inboxes?success=reconnected`);
     }

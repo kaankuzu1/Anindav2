@@ -200,6 +200,13 @@ export class WarmupScheduler {
       .update({ enabled: false, phase: 'paused' })
       .eq('inbox_id', inboxId);
 
+    // Reset inbox status from 'warming_up' to 'active'
+    await this.supabase
+      .from('inboxes')
+      .update({ status: 'active' })
+      .eq('id', inboxId)
+      .eq('status', 'warming_up');
+
     console.log(`Scheduler: Disabled pool warmup for ${email} (insufficient connected pool inboxes)`);
   }
 
