@@ -515,6 +515,9 @@ export class InboxesService {
       })
       .eq('inbox_id', inboxId);
 
+    // Cascade: check if this affects pool warmup for the team
+    await this.cascadePoolWarmupCheck(inboxId);
+
     // Log event
     try {
       await this.supabase
@@ -526,6 +529,50 @@ export class InboxesService {
     } catch (err) {
       // inbox_events table may not exist — non-critical
       this.logger.warn(`Failed to log disconnected event for inbox ${inboxId}`);
+    }
+  }
+
+  /**
+   * After disconnecting a user inbox, check if remaining pool inboxes in the team
+   * have enough peers. If not, disable pool warmup for all remaining inboxes.
+   */
+  private async cascadePoolWarmupCheck(disconnectedInboxId: string): Promise<void> {
+    const { data: inbox } = await this.supabase
+      .from('inboxes')
+      .select('team_id')
+      .eq('id', disconnectedInboxId)
+      .single();
+
+    if (!inbox) return;
+
+    const { data: poolInboxes } = await this.supabase
+      .from('warmup_state')
+      .select('inbox_id, inbox:inboxes(id, status, team_id)')
+      .eq('enabled', true)
+      .neq('warmup_mode', 'network');
+
+    const teamPoolInboxes = (poolInboxes ?? []).filter((ws: any) => {
+      const wsInbox = ws.inbox as any;
+      return wsInbox?.team_id === inbox.team_id &&
+        (wsInbox.status === 'active' || wsInbox.status === 'warming_up');
+    });
+
+    if (teamPoolInboxes.length < 2) {
+      for (const ws of teamPoolInboxes) {
+        await this.supabase
+          .from('warmup_state')
+          .update({ enabled: false, phase: 'paused' })
+          .eq('inbox_id', ws.inbox_id);
+
+        // Reset inbox status from 'warming_up' back to 'active'
+        await this.supabase
+          .from('inboxes')
+          .update({ status: 'active' })
+          .eq('id', ws.inbox_id)
+          .eq('status', 'warming_up');
+
+        this.logger.log(`Cascade: Disabled pool warmup for ${ws.inbox_id} (insufficient pool peers after disconnection)`);
+      }
     }
   }
 

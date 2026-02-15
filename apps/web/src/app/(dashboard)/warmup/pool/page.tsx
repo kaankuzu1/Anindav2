@@ -279,7 +279,7 @@ export default function PoolWarmupPage() {
 
   const poolInboxes = inboxes.filter(i => i.warmup_state?.warmup_mode === 'pool');
   const unassignedInboxes = inboxes.filter(i => !i.warmup_state?.warmup_mode);
-  const activePoolCount = poolInboxes.filter(i => i.status === 'active').length;
+  const activePoolCount = poolInboxes.filter(i => i.status === 'active' || i.status === 'warming_up').length;
 
   if (teamLoading || loading) {
     return (
