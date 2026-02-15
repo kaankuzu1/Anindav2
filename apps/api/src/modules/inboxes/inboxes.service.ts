@@ -591,5 +591,24 @@ export class InboxesService {
 
       this.logger.log(`Inbox ${inbox.email} auto-recovered from disconnected state`);
     }
+
+    // Fix warmup desync: inbox says 'warming_up' but warmup is actually disabled
+    if (inbox.status === 'warming_up') {
+      const { data: warmupState } = await this.supabase
+        .from('warmup_state')
+        .select('enabled')
+        .eq('inbox_id', inbox.id)
+        .single();
+
+      if (warmupState && !warmupState.enabled) {
+        await this.supabase
+          .from('inboxes')
+          .update({ status: 'active' })
+          .eq('id', inbox.id)
+          .eq('status', 'warming_up');
+
+        this.logger.warn(`Inbox ${inbox.email} had warmup desync (status='warming_up' but warmup disabled) — reset to 'active'`);
+      }
+    }
   }
 }

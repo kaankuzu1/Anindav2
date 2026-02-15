@@ -262,6 +262,13 @@ export class ConnectionChecker {
         .eq('inbox_id', assignment.inbox_id)
         .eq('warmup_mode', 'network');
 
+      // Reset inbox status from 'warming_up' to 'active'
+      await this.supabase
+        .from('inboxes')
+        .update({ status: 'active' })
+        .eq('id', assignment.inbox_id)
+        .eq('status', 'warming_up');
+
       console.log(`Disabled network warmup for user inbox ${assignment.inbox_id} (admin inbox disconnected)`);
     }
 

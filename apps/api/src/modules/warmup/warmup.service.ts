@@ -60,6 +60,9 @@ export class WarmupService {
       return { ...newState, inbox };
     }
 
+    // Auto-heal any warmup state desync
+    await this.reconcileWarmupState(inboxId, inbox.status, data.enabled);
+
     return { ...data, inbox };
   }
 
@@ -83,6 +86,12 @@ export class WarmupService {
 
   async enableWarmup(inboxId: string, teamId: string, mode?: 'pool' | 'network') {
     const existingState = await this.getWarmupState(inboxId, teamId);
+
+    // Pre-flight: cannot enable warmup on a disconnected inbox
+    if (existingState.inbox?.status === 'error') {
+      throw new BadRequestException('Cannot enable warmup for a disconnected inbox. Please reconnect it first.');
+    }
+
     const warmupMode = mode ?? existingState.warmup_mode ?? 'pool';
 
     if (warmupMode === 'pool') {
@@ -156,7 +165,15 @@ export class WarmupService {
     await this.supabase
       .from('inboxes')
       .update({ status: 'active' })
-      .eq('id', inboxId);
+      .eq('id', inboxId)
+      .eq('status', 'warming_up');
+
+    // Cascade: check if remaining pool inboxes have < 2 peers
+    try {
+      await this.cascadePoolWarmupCheck(inboxId);
+    } catch (err) {
+      this.logger.warn(`Cascade pool warmup check failed after disabling ${inboxId}: ${err}`);
+    }
 
     return data;
   }
@@ -226,6 +243,22 @@ export class WarmupService {
       .single();
 
     if (error) throw error;
+
+    // Sync inbox status when enabled/disabled via settings
+    if (input.enabled === false) {
+      await this.supabase
+        .from('inboxes')
+        .update({ status: 'active' })
+        .eq('id', inboxId)
+        .eq('status', 'warming_up');
+    } else if (input.enabled === true) {
+      await this.supabase
+        .from('inboxes')
+        .update({ status: 'warming_up' })
+        .eq('id', inboxId)
+        .eq('status', 'active');
+    }
+
     return data;
   }
 
@@ -370,5 +403,78 @@ export class WarmupService {
       .eq('id', inboxId);
 
     return data;
+  }
+
+  /**
+   * Auto-heal warmup state desync between inbox.status and warmup_state.enabled.
+   * Called on every getWarmupState() read to ensure consistency.
+   */
+  private async reconcileWarmupState(inboxId: string, inboxStatus: string, warmupEnabled: boolean): Promise<void> {
+    try {
+      if (inboxStatus === 'warming_up' && !warmupEnabled) {
+        // Inbox thinks it's warming up but warmup is disabled — reset to active
+        await this.supabase
+          .from('inboxes')
+          .update({ status: 'active' })
+          .eq('id', inboxId)
+          .eq('status', 'warming_up');
+
+        this.logger.warn(`Reconciled desync for inbox ${inboxId}: status was 'warming_up' but warmup disabled — reset to 'active'`);
+      } else if (inboxStatus === 'active' && warmupEnabled) {
+        // Warmup is enabled but inbox doesn't reflect it — set to warming_up
+        await this.supabase
+          .from('inboxes')
+          .update({ status: 'warming_up' })
+          .eq('id', inboxId)
+          .eq('status', 'active');
+
+        this.logger.warn(`Reconciled desync for inbox ${inboxId}: warmup enabled but status was 'active' — set to 'warming_up'`);
+      }
+    } catch (err) {
+      this.logger.warn(`Failed to reconcile warmup state for inbox ${inboxId}: ${err}`);
+    }
+  }
+
+  /**
+   * After disabling warmup for an inbox, check if remaining pool inboxes in the team
+   * have enough peers (< 2). If not, disable pool warmup for all remaining inboxes.
+   */
+  private async cascadePoolWarmupCheck(disabledInboxId: string): Promise<void> {
+    const { data: inbox } = await this.supabase
+      .from('inboxes')
+      .select('team_id')
+      .eq('id', disabledInboxId)
+      .single();
+
+    if (!inbox) return;
+
+    const { data: poolStates } = await this.supabase
+      .from('warmup_state')
+      .select('inbox_id, warmup_mode, inbox:inboxes(id, status, team_id)')
+      .eq('enabled', true);
+
+    const teamPoolInboxes = (poolStates ?? []).filter((ws: any) => {
+      const wsInbox = ws.inbox as any;
+      return wsInbox?.team_id === inbox.team_id &&
+        ws.warmup_mode !== 'network' &&
+        (wsInbox.status === 'active' || wsInbox.status === 'warming_up');
+    });
+
+    if (teamPoolInboxes.length < 2) {
+      for (const ws of teamPoolInboxes) {
+        await this.supabase
+          .from('warmup_state')
+          .update({ enabled: false, phase: 'paused' })
+          .eq('inbox_id', ws.inbox_id);
+
+        await this.supabase
+          .from('inboxes')
+          .update({ status: 'active' })
+          .eq('id', ws.inbox_id)
+          .eq('status', 'warming_up');
+
+        this.logger.log(`Cascade: Disabled pool warmup for ${ws.inbox_id} (insufficient pool peers)`);
+      }
+    }
   }
 }
