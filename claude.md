@@ -509,6 +509,31 @@ Warmup emails use 205 pre-written templates with personalization and Fisher-Yate
 
 **Reply subject fix**: Reply jobs receive `originalSubject` from the initial send job and use it with `Re:` prefix instead of the previously hardcoded `'Re: Quick question'`.
 
+### Warmup State Synchronization
+
+`inbox.status` (`'active'` / `'warming_up'`) and `warmup_state.enabled` (`true` / `false`) must always be in sync. Multiple code paths disable warmup, and all must reset `inbox.status` back to `'active'`.
+
+**Invariant**: `inbox.status === 'warming_up'` ⟺ `warmup_state.enabled === true`. Any violation is a desync bug.
+
+**Code paths that disable warmup (all must reset inbox.status):**
+
+| Code Path | File | Trigger |
+|-----------|------|---------|
+| `disableWarmup()` | `warmup.service.ts` | User disables via API |
+| `updateWarmupSettings(enabled=false)` | `warmup.service.ts` | Settings update |
+| `resetWarmup()` | `warmup.service.ts` | User resets warmup |
+| `disablePoolWarmup()` | `warmup-scheduler.ts` | Scheduler detects < 2 pool peers |
+| `markDisconnected()` (user inbox) | `warmup.ts`, `connection-checker.ts`, `inboxes.service.ts` | Auth error or daily check |
+| `markDisconnected()` / `markAdminDisconnected()` (admin inbox cascade) | `warmup.ts`, `connection-checker.ts` | Admin inbox disconnects → disables user inboxes |
+| `cascadePoolWarmupCheck()` | `warmup.ts`, `connection-checker.ts`, `warmup.service.ts`, `inboxes.service.ts` | After disconnection, remaining pool < 2 |
+
+**Auto-healing (defense in depth):**
+- `reconcileWarmupState()` in `warmup.service.ts` — called on every `getWarmupState()` read, auto-fixes desync in both directions
+- `autoRecover()` in `inboxes.service.ts` — on connection check success, also fixes warmup desync
+- OAuth callback (`google/callback/route.ts`) — on inbox reconnection, scans team for desynced inboxes
+
+**Pre-flight guard**: `enableWarmup()` rejects if `inbox.status === 'error'` (disconnected).
+
 ### Legal Pages & Signup Consent
 
 Public-facing Terms of Service and Privacy Policy pages with a mandatory consent checkbox on signup.

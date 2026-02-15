@@ -90,6 +90,11 @@ export default function InboxesPage() {
     }
   };
 
+  const getEffectiveStatus = (inbox: InboxData): string => {
+    if (inbox.status === 'warming_up' && !inbox.warmup_state?.enabled) return 'active';
+    return inbox.status;
+  };
+
   const disconnectedCount = inboxes.filter(isDisconnected).length;
   const spamTotal = inboxes.reduce((acc, i) => acc + (i.spam_complaints_total || 0), 0);
 
@@ -139,7 +144,7 @@ export default function InboxesPage() {
       <div className={`grid grid-cols-1 gap-4 ${disconnectedCount > 0 || spamTotal > 0 ? (disconnectedCount > 0 && spamTotal > 0 ? 'md:grid-cols-6' : 'md:grid-cols-5') : 'md:grid-cols-4'}`}>
         <StatCard
           label="Active"
-          value={inboxes.filter((i) => i.status === 'active').length}
+          value={inboxes.filter((i) => getEffectiveStatus(i) === 'active').length}
           icon={<CheckCircle className="w-5 h-5" />}
           color="green"
           className="p-4"
@@ -239,15 +244,15 @@ export default function InboxesPage() {
                     </span>
                   ) : (
                     <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${
-                      inbox.status === 'active'
+                      getEffectiveStatus(inbox) === 'active'
                         ? 'bg-green-100 text-green-800 dark:bg-green-500/20 dark:text-green-300'
-                        : inbox.status === 'warming_up'
+                        : getEffectiveStatus(inbox) === 'warming_up'
                         ? 'bg-orange-100 text-orange-800 dark:bg-orange-500/20 dark:text-orange-300'
-                        : inbox.status === 'paused'
+                        : getEffectiveStatus(inbox) === 'paused'
                         ? 'bg-yellow-100 text-yellow-800 dark:bg-yellow-500/20 dark:text-yellow-300'
                         : 'bg-red-100 text-red-800 dark:bg-red-500/20 dark:text-red-300'
                     }`}>
-                      {inbox.status.replace('_', ' ')}
+                      {getEffectiveStatus(inbox).replace('_', ' ')}
                     </span>
                   )}
                 </td>
