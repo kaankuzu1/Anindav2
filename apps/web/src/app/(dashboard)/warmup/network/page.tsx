@@ -62,6 +62,16 @@ export default function NetworkWarmupPage() {
 
   const apiUrl = (process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001') + '/api/v1';
 
+  async function reconcileViaApi(tid: string, token: string) {
+    try {
+      await fetch(`${apiUrl}/warmup?team_id=${tid}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+    } catch {
+      // API may be restarting — Supabase fetch still works
+    }
+  }
+
   useEffect(() => {
     if (teamLoading) return;
     if (!teamId) {
@@ -69,8 +79,13 @@ export default function NetworkWarmupPage() {
       return;
     }
 
-    refreshInboxes(teamId).then(() => setLoading(false));
-  }, [teamId, teamLoading]);
+    async function init() {
+      if (accessToken) await reconcileViaApi(teamId!, accessToken);
+      await refreshInboxes(teamId!);
+      setLoading(false);
+    }
+    init();
+  }, [teamId, teamLoading, accessToken]);
 
   async function refreshInboxes(tid?: string) {
     const tId = tid || teamId;

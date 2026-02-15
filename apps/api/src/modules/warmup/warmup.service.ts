@@ -74,6 +74,7 @@ export class WarmupService {
         email,
         provider,
         status,
+        status_reason,
         health_score,
         warmup_state(*)
       `)
@@ -81,6 +82,39 @@ export class WarmupService {
       .order('created_at', { ascending: false });
 
     if (error) throw error;
+
+    // Batch reconciliation: scan all inboxes for warmup state desyncs and fix them
+    for (const inbox of data ?? []) {
+      const warmupState = inbox.warmup_state as any;
+      if (!warmupState) continue;
+
+      try {
+        if (inbox.status === 'warming_up' && warmupState.enabled === false) {
+          // Inbox thinks it's warming up but warmup is disabled — reset to active
+          await this.supabase
+            .from('inboxes')
+            .update({ status: 'active' })
+            .eq('id', inbox.id)
+            .eq('status', 'warming_up');
+
+          inbox.status = 'active';
+          this.logger.warn(`Batch reconciled desync for inbox ${inbox.id}: status was 'warming_up' but warmup disabled — reset to 'active'`);
+        } else if (inbox.status === 'active' && warmupState.enabled === true) {
+          // Warmup is enabled but inbox doesn't reflect it — set to warming_up
+          await this.supabase
+            .from('inboxes')
+            .update({ status: 'warming_up' })
+            .eq('id', inbox.id)
+            .eq('status', 'active');
+
+          inbox.status = 'warming_up';
+          this.logger.warn(`Batch reconciled desync for inbox ${inbox.id}: warmup enabled but status was 'active' — set to 'warming_up'`);
+        }
+      } catch (err) {
+        this.logger.warn(`Failed to batch reconcile warmup state for inbox ${inbox.id}: ${err}`);
+      }
+    }
+
     return data;
   }
 
