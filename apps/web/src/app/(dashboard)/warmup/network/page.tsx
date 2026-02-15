@@ -148,10 +148,15 @@ export default function NetworkWarmupPage() {
       if (!res.ok) {
         let errorMsg = 'Failed to assign inbox';
         try {
-          const errData = await res.json();
-          errorMsg = errData.message || errorMsg;
+          const text = await res.text();
+          try {
+            const errData = JSON.parse(text);
+            errorMsg = errData.message || errorMsg;
+          } catch {
+            if (text) errorMsg = text;
+          }
         } catch {
-          errorMsg = await res.text();
+          // Response body unreadable
         }
         toast.error(errorMsg);
         return;
@@ -182,10 +187,15 @@ export default function NetworkWarmupPage() {
         if (!res.ok) {
           let errorMsg = 'Failed to enable warmup';
           try {
-            const errData = await res.json();
-            errorMsg = errData.message || errorMsg;
+            const text = await res.text();
+            try {
+              const errData = JSON.parse(text);
+              errorMsg = errData.message || errorMsg;
+            } catch {
+              if (text) errorMsg = text;
+            }
           } catch {
-            errorMsg = await res.text();
+            // Response body unreadable
           }
           toast.error(errorMsg);
           return;

@@ -529,8 +529,11 @@ Warmup emails use 205 pre-written templates with personalization and Fisher-Yate
 
 **Auto-healing (defense in depth):**
 - `reconcileWarmupState()` in `warmup.service.ts` — called on every `getWarmupState()` read, auto-fixes desync in both directions
+- **Batch reconciliation** in `getAllWarmupStates()` — scans all inboxes on bulk fetch and fixes desyncs in-place (per-inbox try/catch so one failure doesn't break the list)
 - `autoRecover()` in `inboxes.service.ts` — on connection check success, also fixes warmup desync
 - OAuth callback (`google/callback/route.ts`) — on inbox reconnection, scans team for desynced inboxes
+- **Frontend `getEffectiveStatus()` helper** in `inboxes/page.tsx` — returns `'active'` when `inbox.status === 'warming_up'` but `warmup_state.enabled === false`, so status badges display correctly even before backend reconciliation runs
+- **Frontend reconciliation on mount** in `warmup/pool/page.tsx` and `warmup/network/page.tsx` — calls `GET /warmup?team_id=...` on page load to trigger backend batch reconciliation before Supabase data fetch (silent error handling if API is restarting)
 
 **Pre-flight guard**: `enableWarmup()` rejects if `inbox.status === 'error'` (disconnected).
 
