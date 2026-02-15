@@ -635,6 +635,13 @@ export class WarmupWorker {
           .update({ enabled: false, phase: 'paused' })
           .eq('inbox_id', ws.inbox_id);
 
+        // Reset inbox status from 'warming_up' back to 'active'
+        await this.supabase
+          .from('inboxes')
+          .update({ status: 'active' })
+          .eq('id', ws.inbox_id)
+          .eq('status', 'warming_up');
+
         console.log(`Cascade: Disabled pool warmup for ${ws.inbox_id} (insufficient pool peers in team)`);
       }
     }
