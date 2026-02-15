@@ -4,8 +4,6 @@ RUN corepack enable && corepack prepare pnpm@8.15.0 --activate
 
 WORKDIR /app
 
-ENV NODE_ENV=production
-
 COPY . .
 
 RUN pnpm install --frozen-lockfile
@@ -14,5 +12,7 @@ RUN pnpm --filter @aninda/shared build && \
     pnpm --filter @aninda/database build && \
     pnpm --filter @aninda/email-client build && \
     pnpm --filter @aninda/workers build
+
+ENV NODE_ENV=production
 
 CMD ["node", "apps/workers/dist/index.js"]
