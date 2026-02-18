@@ -84,7 +84,12 @@ Import shared packages via `@aninda/database`, `@aninda/email-client`, `@aninda/
 
 ## Testing
 
-No jest/vitest framework is configured. Tests use standalone TypeScript scripts with `node:assert/strict`, run via `npx tsx`. 765 total tests across 3 audit suites.
+No jest/vitest framework is configured. Tests use standalone TypeScript scripts with `node:assert/strict`, run via `npx tsx`. 4,233 total tests across 7 audit suites.
+
+```bash
+# Run ALL tests
+for f in tests/variable-audit/*.ts tests/analytics-audit/*.ts tests/campaign-audit/*.ts tests/campaign-simulation/*.ts tests/smart-template-audit/*.ts tests/schedule-audit/*.ts tests/prelaunch-audit/*.ts; do npx tsx "$f"; done
+```
 
 ### Variable System Audit (tests/variable-audit/)
 
@@ -139,6 +144,44 @@ for f in tests/campaign-audit/*.ts; do npx tsx "$f"; done
 | Webhook Delivery | `test-webhook-delivery.ts` | 38 | HMAC-SHA256 determinism, roundtrip, tampering, retries, all 14 event types, schema validation, payload format |
 | Lead State Machine | `test-lead-state-machine.ts` | 91 | All valid/invalid transitions, terminal states, blocksSequence, MANUAL_OVERRIDE, isTerminalState, helpers, getAvailableEvents, transition() method |
 | Integration | `test-campaign-integration.ts` | 35 | Full lifecycle, multi-step sequences, A/B variant lifecycle, cross-system consistency, validation schemas, race conditions, webhook roundtrip |
+
+### Pre-Launch Comprehensive Audit (tests/prelaunch-audit/)
+
+2,933 tests across 15 suites covering every system boundary — auth/security, validation, template engine stress, tracking pipeline, lead state machine, auth error detection, warmup system, campaign scheduler, bounce processing, reply classification, webhook integrity, DNS/email verification, A/B optimizer statistics, worker orchestration, and end-to-end data flow:
+
+```bash
+# Run all prelaunch audit tests
+for f in tests/prelaunch-audit/*.ts; do npx tsx "$f"; done
+```
+
+| Suite | File | Tests | What it covers |
+|-------|------|-------|----------------|
+| Auth Guard & Security | `test-auth-security.ts` | 187 | Supabase/admin/team guards, unsubscribe tokens, input validation, encryption, GDPR endpoints |
+| Validation Schemas | `test-validation-schemas.ts` | 300 | All 19 Zod schemas with valid/invalid/boundary inputs |
+| Template Engine Stress | `test-template-engine-stress.ts` | 173 | Deeply nested spintax, 1000-option spintax, 500 variables perf, nested conditionals, unicode/emoji, 1MB templates |
+| Tracking & URL Security | `test-tracking-security.ts` | 160 | Tracking ID encode/decode, pixel injection, link wrapping (7 skip conditions), `javascript:`/`data:` URL rejection, GIF buffer |
+| Lead State Completeness | `test-lead-state-completeness.ts` | 259 | Complete 12x13 transition matrix, terminal states, `replyIntentToEvent`, `bounceTypeToEvent`, `getAvailableEvents` |
+| Auth Error Detection | `test-auth-error-detection.ts` | 150 | `isAuthError()` true/false positives (bug #3 regression), encrypt/decrypt roundtrip, cross-worker consistency |
+| Warmup System | `test-warmup-system.ts` | 208 | 205 template inventory, variable syntax, `extractFirstName`, quota calculation, Fisher-Yates dedup, mode switching |
+| Campaign Scheduler Logic | `test-campaign-scheduler-logic.ts` | 201 | `selectVariant()` (10K iterations), send windows, per-day schedule, health filter, throttle, send time optimizer |
+| Bounce & Suppression | `test-bounce-suppression.ts` | 160 | Bounce classification, `effectiveBounceType` regression, soft bounce retry (1h/4h/24h), suppression, 3% auto-pause |
+| Reply Classification | `test-reply-classification-override.ts` | 187 | All 9 intents, SEQUENCE_STOP/SUPPRESSION_INTENTS, manual override protection, reply scanner gap documentation |
+| Webhook Integrity | `test-webhook-integrity.ts` | 170 | HMAC-SHA256 signatures, all 14 event types, retry behavior, secret generation, payload format |
+| DNS & Email Verification | `test-dns-email-verification.ts` | 180 | Email syntax (RFC 5322), SPF/DKIM/DMARC parsing, DNS scoring, domain verification |
+| A/B Optimizer Statistics | `test-ab-optimizer-statistics.ts` | 211 | Z-score, CDF accuracy, progressive shifting (5 thresholds), weight reset regression, MIN_SAMPLES boundary |
+| Worker Orchestration | `test-worker-orchestration.ts` | 138 | Queue names, concurrency, rate limiters, signal handlers, scheduler intervals, missing error handlers |
+| E2E Data Flow | `test-e2e-data-flow.ts` | 249 | Full campaign lifecycle, variable injection consistency, counter consistency (8 RPCs), A/B/warmup/bounce flows |
+
+**Known issues documented by audit** (see `PRELAUNCH-ISSUES.md` for full details):
+1. No rate limiting on any endpoint (139 endpoints) — **CRITICAL**
+2. N+1 query in `admin-inboxes.service.ts` `listAdminInboxes()` — HIGH
+3. Analytics queries fetch unlimited rows (9 unbounded queries) — HIGH
+4. Campaign start has no inbox health check — HIGH
+5. Admin JWT accepted via query parameter (log leakage) — HIGH
+6. Reply scanner missing `isAuthError()` detection — HIGH
+7. SmartScheduler initialized but never started (dead code) — MEDIUM
+8. No `process.on('unhandledRejection')` in workers — MEDIUM
+9. GDPR endpoints lack input validation and auth guard — **CRITICAL**
 
 ### Campaign System — All Known Bugs Fixed
 
@@ -652,16 +695,16 @@ Production is deployed on Railway with 4 services in the "Aninda" project.
 
 **Dockerfiles** (root-level):
 - `Dockerfile.web` — Multi-stage build: builds with `NEXT_PUBLIC_*` ARGs, then copies Next.js standalone output to a slim runner image. Requires `sharp` for image optimization.
-- `Dockerfile.api` — Standard NestJS build with `NODE_ENV=production`
-- `Dockerfile.workers` — Standard workers build with `NODE_ENV=production`
+- `Dockerfile.api` — Standard NestJS build. `NODE_ENV=production` is set **after** the build step (not before `pnpm install`) so devDependencies like `typescript` are available during build.
+- `Dockerfile.workers` — Standard workers build. Same `NODE_ENV` placement as API.
 
 **Next.js Standalone Output**: `apps/web/next.config.js` uses `output: 'standalone'` with `outputFileTracingRoot` pointing to monorepo root. The runner stage copies `.next/standalone`, `.next/static`, and `public` — runs via `node apps/web/server.js` (not `next start`).
 
 **Proxy-aware Origin Detection**: All Next.js API routes (`/api/auth/*`) use `x-forwarded-host` and `x-forwarded-proto` headers to derive the real origin. This is required because standalone mode behind Railway's reverse proxy returns `0.0.0.0:3000` from `request.url`. Helper function `getOrigin()` in each route handles this.
 
 **Cross-service linking**:
-- `web` has `NEXT_PUBLIC_API_URL` → api Railway URL
-- `api` has `FRONTEND_URL` + `CORS_ORIGIN` → web Railway URL (CORS uses `CORS_ORIGIN` with `FRONTEND_URL` fallback)
+- `web` has `NEXT_PUBLIC_API_URL` → api Railway URL (`https://api-production-06e6.up.railway.app`)
+- `api` has `FRONTEND_URL` = `https://mindorasystems.com`, `APP_URL` = `https://mindorasystems.com`, `CORS_ORIGIN` = `https://mindorasystems.com` (CORS uses `CORS_ORIGIN` with `FRONTEND_URL` fallback, both arrays supported)
 
 **Auto-deploy from GitHub**: Each service must be connected to the GitHub repo via the Railway dashboard (Settings → Source → Connect Repo → `kaankuzu1/Anindav2`). Once connected, every push to `main` auto-deploys all 3 services. Without this, deploys are manual via `railway up`.
 
@@ -803,6 +846,8 @@ apps/workers/.env     # Same as API
 - `tests/variable-audit/` - Variable system audit tests (229 tests across 5 suites, run with `npx tsx`)
 - `tests/analytics-audit/` - Analytics pipeline audit tests (58 tests across 3 suites, run with `npx tsx`)
 - `tests/campaign-audit/` - Campaign system audit tests (478 tests across 10 suites, run with `npx tsx`)
+- `tests/prelaunch-audit/` - Pre-launch comprehensive audit tests (2,933 tests across 15 suites, run with `npx tsx`)
+- `PRELAUNCH-ISSUES.md` - 9 critical production issues found by the pre-launch audit, with file:line references, impact analysis, and recommended fixes
 - `packages/database/supabase/migrations/20260210000000_fix_analytics_pipeline.sql` - Migration adding email columns, `retry_pending` enum, and 6 atomic RPC functions for stat increments
 - `packages/database/supabase/migrations/20260211000000_add_smart_template.sql` - Migration adding smart template columns to sequences/variants, analysis_notes to leads, smart_template_personalized to emails
 - `packages/database/supabase/migrations/20260212000000_add_smart_template_enhancements.sql` - Migration adding smart_template_language_match and smart_template_notes to sequences/variants
