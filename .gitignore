@@ -36,3 +36,4 @@ RAILWAY_ENV.md
 
 # Misc
 *.tsbuildinfo
+!.env.local.example

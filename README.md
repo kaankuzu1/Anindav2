@@ -1,96 +1,64 @@
-<div align="center">
+# Aninda
 
-```
-    _          _           _       
-   / \   _ __ (_)_ __   __| | __ _ 
-  / _ \ | '_ \| | '_ \ / _` |/ _` |
- / ___ \| | | | | | | | (_| | (_| |
-/_/   \_\_| |_|_|_| |_|\__,_|\__,_|
-```
+Cold email outreach platform for agencies and small sales teams. It covers the whole loop: connect inboxes, warm them up, import and verify leads, run multi-step campaigns, and handle replies from a single place.
 
-### Cold Email Outreach Platform
+Screenshots show the app under Mindora, the name the product later shipped with.
 
-[![Next.js](https://img.shields.io/badge/Next.js-000?style=flat-square&logo=nextdotjs)](https://nextjs.org/)
-[![NestJS](https://img.shields.io/badge/NestJS-E0234E?style=flat-square&logo=nestjs&logoColor=white)](https://nestjs.com/)
-[![Supabase](https://img.shields.io/badge/Supabase-3FCF8E?style=flat-square&logo=supabase&logoColor=white)](https://supabase.com/)
-[![TypeScript](https://img.shields.io/badge/TypeScript-3178C6?style=flat-square&logo=typescript&logoColor=white)](https://typescriptlang.org/)
-
-</div>
-
----
-
-A full-stack cold email outreach platform built for agencies and sales teams. Manage multiple inboxes, automate email warmup with AI, run A/B tested campaign sequences, and protect deliverability — all from one dashboard.
+![Dashboard](docs/dashboard.png)
 
 ## Features
 
-```
-+---------------------+    +---------------------+    +---------------------+
-|   INBOX MANAGEMENT  |    |    AI WARMUP ENGINE  |    |   CAMPAIGN BUILDER  |
-|                     |    |                      |    |                     |
-|  Multi-inbox setup  |    |  Auto warm-up flows  |    |  Multi-step seqs    |
-|  Unified dashboard  |    |  AI-generated reply   |    |  A/B variant tests  |
-|  Connection health  |    |  Reputation scoring  |    |  Smart scheduling   |
-+---------------------+    +---------------------+    +---------------------+
-          |                          |                          |
-          +------------+-------------+-------------+------------+
-                       |                           |
-          +---------------------+    +---------------------+
-          | TEAM COLLABORATION  |    |   DELIVERABILITY    |
-          |                     |    |                     |
-          |  Role-based access  |    |  Bounce detection   |
-          |  Shared templates   |    |  Spam score checks  |
-          |  Activity tracking  |    |  Domain monitoring  |
-          +---------------------+    +---------------------+
-```
+- **Campaigns**: multi-step sequences with delays, A/B variants and spintax. A smart template system fills `[instruction]` placeholders with AI-generated text per lead at send time (details in [docs/smart-campaign.md](docs/smart-campaign.md)).
+- **Inboxes**: Gmail, Microsoft 365 and plain SMTP accounts behind one interface, with connection health checks.
+- **Warmup**: automated warmup conversations between your own inboxes, with ramp-up scheduling and reputation tracking.
+- **Unibox**: replies from every inbox in one view, classified by intent (interested, question, meeting booked).
+- **Leads**: CSV import with syntax and DNS/MX verification, and a state machine that tracks where each lead sits in the funnel.
+- **Analytics**: opens, clicks, replies and bounces per campaign and per inbox.
+- **Deliverability**: bounce processing, send-time optimization and per-inbox sending limits.
 
-## Tech Stack
-
-| Layer | Technology |
-|-------|-----------|
-| **Frontend** | Next.js, React, TypeScript, Tailwind CSS |
-| **Backend** | NestJS, Node.js, BullMQ (job queues) |
-| **Database** | Supabase (PostgreSQL), Row Level Security |
-| **AI** | OpenRouter API for warmup & personalization |
-| **Infra** | Docker-ready, background workers |
+![Landing page](docs/home.png)
 
 ## Architecture
 
+pnpm + Turborepo monorepo, three apps and three shared packages:
+
 ```
-┌──────────────┐     ┌──────────────┐     ┌──────────────┐
-│   Next.js    │────>│   NestJS     │────>│  Supabase    │
-│   Frontend   │<────│   API        │<────│  PostgreSQL  │
-└──────────────┘     └──────┬───────┘     └──────────────┘
-                            │
-                     ┌──────┴───────┐
-                     │   BullMQ     │
-                     │  Job Queue   │
-                     └──────┬───────┘
-                            │
-              ┌─────────────┼─────────────┐
-              │             │             │
-       ┌──────┴──┐   ┌─────┴───┐   ┌─────┴────┐
-       │ Warmup  │   │Campaign │   │ Bounce   │
-       │ Worker  │   │ Worker  │   │ Monitor  │
-       └─────────┘   └─────────┘   └──────────┘
+apps/
+  web        Next.js 14 dashboard (App Router, Tailwind, Radix UI)
+  api        NestJS REST API: auth, campaigns, inboxes, leads, warmup,
+             replies, analytics, tracking, webhooks
+  workers    BullMQ background jobs: email sender, campaign scheduler,
+             warmup, reply scanner, bounce processor, A/B test optimizer
+
+packages/
+  database      Supabase client and generated types
+  email-client  Gmail, Microsoft Graph and SMTP senders behind one interface
+  shared        DNS validation, email verification, lead state machine,
+                send-time optimizer
 ```
 
-## Getting Started
+Postgres, auth and row-level security come from Supabase. Queues run on Redis through BullMQ. Each app has its own Dockerfile.
+
+## Running locally
+
+Requirements: Node 20+, pnpm 9, Redis, and a Supabase project.
 
 ```bash
-# Clone
-git clone https://github.com/kaankuzu1/Anindav2.git
-cd Anindav2
+pnpm install
 
-# Install dependencies
-npm install
+# environment
+cp apps/web/.env.local.example apps/web/.env.local   # Supabase URL + keys
+cp apps/api/.env.example apps/api/.env               # API secrets, Redis URL
 
-# Set up environment variables
-cp .env.example .env
+# database schema
+./scripts/run-migrations.sh
 
-# Run development server
-npm run dev
+# start web, api and workers together
+pnpm dev
 ```
 
-## License
+The dashboard runs on `localhost:3000`, the API on `localhost:3001`.
 
-MIT
+## Tests
+
+Audit-style suites live under `tests/`: campaign logic, scheduling, analytics, smart templates and a pre-launch checklist.
