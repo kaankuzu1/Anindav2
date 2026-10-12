@@ -2,7 +2,7 @@
 
 Cold email outreach platform for agencies and small sales teams. It covers the whole loop: connect inboxes, warm them up, import and verify leads, run multi-step campaigns, and handle replies from a single place.
 
-Screenshots show the app under Mindora, the name the product later shipped with.
+Screenshots show the app under Mindora, the name it was later renamed to.
 
 ![Dashboard](docs/dashboard.png)
 
