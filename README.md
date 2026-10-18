@@ -41,7 +41,7 @@ Postgres, auth and row-level security come from Supabase. Queues run on Redis th
 
 ## Running locally
 
-Requirements: Node 20+, pnpm 9, Redis, and a Supabase project.
+Requirements: Node 20+, pnpm 8 (the repo pins `pnpm@8.15.0`), Redis, and a Supabase project.
 
 ```bash
 pnpm install
@@ -50,7 +50,8 @@ pnpm install
 cp apps/web/.env.local.example apps/web/.env.local   # Supabase URL + keys
 cp apps/api/.env.example apps/api/.env               # API secrets, Redis URL
 
-# database schema
+# database schema: prints the migration SQL for manual execution,
+# or pass --apply to run it with psql (needs DATABASE_URL)
 ./scripts/run-migrations.sh
 
 # start web, api and workers together
@@ -61,4 +62,8 @@ The dashboard runs on `localhost:3000`, the API on `localhost:3001`.
 
 ## Tests
 
-Audit-style suites live under `tests/`: campaign logic, scheduling, analytics, smart templates and a pre-launch checklist.
+Audit-style suites live under `tests/`: campaign logic, scheduling, analytics, smart templates and a pre-launch checklist. They are standalone scripts with no test runner, so run each one directly:
+
+```bash
+npx tsx tests/campaign-audit/test-ab-testing.ts
+```
